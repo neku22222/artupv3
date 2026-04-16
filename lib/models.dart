@@ -43,21 +43,23 @@ class ProfileModel {
 class PostModel {
   final String id;
   final String authorId;
-  final String title;
-  final String description;
+  String title;        // mutable for edit
+  String description;  // mutable for edit
   // Primary image (first, used for thumbnails)
   final String imageUrl;
   // All images, up to 5
   final List<String> imageUrls;
-  final String category;
-  final List<String> tags;
-  final String visibility;
+  String category;     // mutable for edit
+  List<String> tags;   // mutable for edit
+  String visibility;   // mutable for edit
   int likesCount; // mutable for optimistic updates
   final DateTime createdAt;
   final String? authorHandle;
   final String? authorName;
   final String? authorAvatar;
   bool isLiked;
+  // Age rating: 'SFW' | 'NSFW' | '18+'
+  String ageRating;    // mutable for edit
 
   PostModel({
     required this.id,
@@ -75,14 +77,31 @@ class PostModel {
     this.authorName,
     this.authorAvatar,
     this.isLiked = false,
+    this.ageRating = 'SFW',
   }) : imageUrls = (imageUrls != null && imageUrls.isNotEmpty) ? imageUrls : [imageUrl];
 
   factory PostModel.fromMap(Map<String, dynamic> m) {
     final primary = m['image_url'] as String;
-    final urls = m['image_urls'] != null
-        ? List<String>.from(m['image_urls'] as List)
-        : <String>[];
+    final raw = m['image_urls'];
+    List<String> urls;
+    if (raw == null) {
+      urls = [primary];
+    } else if (raw is List) {
+      urls = List<String>.from(raw);
+    } else if (raw is String) {
+      // Stored as a single string — wrap in list
+      urls = [raw];
+    } else {
+      urls = [primary];
+    }
     if (urls.isEmpty) urls.add(primary);
+
+    // Normalise legacy age_rating values from DB ('All Ages','13+','17+','18+') → app values
+    String rawRating = (m['age_rating'] ?? 'SFW') as String;
+    if (rawRating == 'All Ages' || rawRating == '13+') rawRating = 'SFW';
+    else if (rawRating == '17+') rawRating = 'NSFW';
+    // '18+' stays as is
+
     return PostModel(
       id:           m['id'] as String,
       authorId:     m['author_id'] as String,
@@ -98,14 +117,39 @@ class PostModel {
       authorHandle: m['author_handle'] as String?,
       authorName:   m['author_name'] as String?,
       authorAvatar: m['author_avatar'] as String?,
+      ageRating:    rawRating,
     );
   }
 
   Map<String, dynamic> toInsertMap() => {
-    'author_id': authorId, 'title': title, 'description': description,
-    'image_url': imageUrl, 'image_urls': imageUrls,
-    'category': category, 'tags': tags, 'visibility': visibility,
+    'author_id':  authorId,
+    'title':      title,
+    'description': description,
+    'image_url':  imageUrl,
+    'image_urls': imageUrls,
+    'category':   category,
+    'tags':       tags,
+    'visibility': visibility,
+    'age_rating': _mapAgeRatingToDb(ageRating),
   };
+
+  Map<String, dynamic> toEditMap() => {
+    'title':      title,
+    'description': description,
+    'category':   category,
+    'tags':       tags,
+    'visibility': visibility,
+    'age_rating': _mapAgeRatingToDb(ageRating),
+  };
+
+  /// Map app-facing rating → DB check constraint values
+  static String _mapAgeRatingToDb(String rating) {
+    switch (rating) {
+      case 'NSFW': return '17+';
+      case '18+':  return '18+';
+      default:     return 'All Ages'; // SFW
+    }
+  }
 }
 
 class CommentModel {
@@ -185,5 +229,45 @@ class MessageModel {
     senderId:       m['sender_id'] as String,
     body:           m['body'] as String,
     createdAt:      DateTime.parse(m['created_at'] as String),
+  );
+}
+
+/// Notification model for in-app notifications
+class NotificationModel {
+  final String id;
+  final String type;    // 'like' | 'comment' | 'follow'
+  final String actorId;
+  final String? actorHandle;
+  final String? actorAvatar;
+  final String? postId;
+  final String? postImageUrl;
+  final String? commentBody;
+  final DateTime createdAt;
+  bool isRead;
+
+  NotificationModel({
+    required this.id,
+    required this.type,
+    required this.actorId,
+    this.actorHandle,
+    this.actorAvatar,
+    this.postId,
+    this.postImageUrl,
+    this.commentBody,
+    required this.createdAt,
+    this.isRead = false,
+  });
+
+  factory NotificationModel.fromMap(Map<String, dynamic> m) => NotificationModel(
+    id:           m['id'] as String,
+    type:         m['type'] as String,
+    actorId:      m['actor_id'] as String,
+    actorHandle:  m['actor_handle'] as String?,
+    actorAvatar:  m['actor_avatar'] as String?,
+    postId:       m['post_id'] as String?,
+    postImageUrl: m['post_image_url'] as String?,
+    commentBody:  m['comment_body'] as String?,
+    createdAt:    DateTime.parse(m['created_at'] as String),
+    isRead:       (m['is_read'] ?? false) as bool,
   );
 }

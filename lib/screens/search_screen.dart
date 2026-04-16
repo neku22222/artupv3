@@ -18,17 +18,21 @@ class _SearchScreenState extends State<SearchScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs = TabController(length: 2, vsync: this);
   final _ctrl = TextEditingController();
+  // ScrollController for programmatic scroll-to-top
+  final ScrollController _postScrollCtrl    = ScrollController();
+  final ScrollController _profileScrollCtrl = ScrollController();
+
   List<PostModel> _posts = [];
   List<ProfileModel> _profiles = [];
   bool _loading = false;
   bool _searched = false;
+  String _lastQuery = '';
 
   final List<String> _categories = [
     'All', '2D', '3D', 'Photography', 'Sketch', 'Digital', 'Oil Paint'
   ];
   int _activeFilter = 0;
 
-  // ── Fix #6: each tag card holds its top-post image URL ──────────────────
   static const List<String> _tags = [
     '#Renaissance', '#Landscape', '#WaterColour',
     '#Architecture', '#Sketch', '#Portrait',
@@ -57,15 +61,17 @@ class _SearchScreenState extends State<SearchScreen>
   void dispose() {
     _ctrl.dispose();
     _tabs.dispose();
+    _postScrollCtrl.dispose();
+    _profileScrollCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _search(String query) async {
     if (query.isEmpty) {
-      setState(() { _posts = []; _profiles = []; _searched = false; });
+      setState(() { _posts = []; _profiles = []; _searched = false; _lastQuery = ''; });
       return;
     }
-    setState(() { _loading = true; _searched = true; });
+    setState(() { _loading = true; _searched = true; _lastQuery = query; });
     try {
       final results = await Future.wait([
         postService.searchPosts(query),
@@ -82,12 +88,26 @@ class _SearchScreenState extends State<SearchScreen>
   }
 
   Future<void> _searchByTag(String tag) async {
-    setState(() { _loading = true; _searched = true; _ctrl.text = tag; });
+    setState(() { _loading = true; _searched = true; _ctrl.text = tag; _lastQuery = tag; });
     try {
       final posts = await postService.searchByTag(tag);
       if (mounted) setState(() { _posts = posts; _profiles = []; _loading = false; });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// Pull-to-refresh re-runs the last query
+  Future<void> _onRefresh() async {
+    if (_lastQuery.isNotEmpty) await _search(_lastQuery);
+  }
+
+  /// Scroll-to-top helpers
+  void _scrollToTop() {
+    final ctrl = _tabs.index == 0 ? _postScrollCtrl : _profileScrollCtrl;
+    if (ctrl.hasClients) {
+      ctrl.animateTo(0,
+          duration: const Duration(milliseconds: 400), curve: Curves.easeOut);
     }
   }
 
@@ -108,7 +128,6 @@ class _SearchScreenState extends State<SearchScreen>
       ),
 
       if (!_searched) ...[
-        // Category chips
         SizedBox(
           height: 48,
           child: ListView.separated(
@@ -160,6 +179,7 @@ class _SearchScreenState extends State<SearchScreen>
             unselectedLabelColor: AppColors.muted,
             indicatorColor: AppColors.peach,
             labelStyle: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w600),
+            onTap: (_) => _scrollToTop(),
             tabs: [
               Tab(text: 'Artworks (${_posts.length})'),
               Tab(text: 'Artists (${_profiles.length})'),
@@ -169,17 +189,24 @@ class _SearchScreenState extends State<SearchScreen>
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
-              : TabBarView(controller: _tabs, children: [
-                  _PostResults(posts: _posts),
-                  _ProfileResults(profiles: _profiles),
-                ]),
+              : RefreshIndicator(
+                  color: AppColors.peach,
+                  onRefresh: _onRefresh,
+                  child: TabBarView(controller: _tabs, children: [
+                    _PostResults(
+                        posts: _posts,
+                        scrollController: _postScrollCtrl),
+                    _ProfileResults(
+                        profiles: _profiles,
+                        scrollController: _profileScrollCtrl),
+                  ]),
+                ),
         ),
       ],
     ]);
   }
 }
 
-// ── Fix #6: tag card shows real top-post image ────────────────────────────────
 class _TagCard extends StatelessWidget {
   final String tag;
   final String imageUrl;
@@ -201,13 +228,10 @@ class _TagCard extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
         child: Stack(fit: StackFit.expand, children: [
-          // Real image if available, fallback color otherwise
           if (imageUrl.isNotEmpty)
             AppNetworkImage(url: imageUrl, fit: BoxFit.cover)
           else
             Container(color: fallback),
-
-          // Dark scrim so tag text is always readable
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -217,14 +241,11 @@ class _TagCard extends StatelessWidget {
               ),
             ),
           ),
-
-          // Tag label
           Positioned(
             bottom: 10, left: 10, right: 10,
             child: Text(tag,
                 style: GoogleFonts.dmSans(
-                    fontSize: 13, fontWeight: FontWeight.w700,
-                    color: Colors.white)),
+                    fontSize: 13, fontWeight: FontWeight.w700, color: Colors.white)),
           ),
         ]),
       ),
@@ -234,7 +255,8 @@ class _TagCard extends StatelessWidget {
 
 class _PostResults extends StatelessWidget {
   final List<PostModel> posts;
-  const _PostResults({required this.posts});
+  final ScrollController scrollController;
+  const _PostResults({required this.posts, required this.scrollController});
 
   @override
   Widget build(BuildContext context) {
@@ -245,6 +267,7 @@ class _PostResults extends StatelessWidget {
           subtitle: 'Try a different search term or tag');
     }
     return GridView.builder(
+      controller: scrollController,
       padding: const EdgeInsets.all(16),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2, crossAxisSpacing: 8,
@@ -264,7 +287,8 @@ class _PostResults extends StatelessWidget {
 
 class _ProfileResults extends StatelessWidget {
   final List<ProfileModel> profiles;
-  const _ProfileResults({required this.profiles});
+  final ScrollController scrollController;
+  const _ProfileResults({required this.profiles, required this.scrollController});
 
   @override
   Widget build(BuildContext context) {
@@ -275,6 +299,7 @@ class _ProfileResults extends StatelessWidget {
           subtitle: 'Try searching by handle or name');
     }
     return ListView.separated(
+      controller: scrollController,
       padding: const EdgeInsets.all(16),
       itemCount: profiles.length,
       separatorBuilder: (_, __) =>

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -8,6 +9,7 @@ import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
 import 'profile_screen.dart';
+import 'upload_screen.dart';
 
 class PostDetailScreen extends StatefulWidget {
   final String postId;
@@ -74,23 +76,17 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
         final imageProvider = NetworkImage(url);
         final stream = imageProvider.resolve(ImageConfiguration.empty);
         stream.addListener(ImageStreamListener((info, _) {
-          if (!completer.isCompleted) {
-            completer.complete(info.image);
-          }
+          if (!completer.isCompleted) completer.complete(info.image);
         }, onError: (_, __) {
-          if (!completer.isCompleted) {
-            completer.completeError('failed');
-          }
+          if (!completer.isCompleted) completer.completeError('failed');
         }));
         final img = await completer.future;
         if (mounted) {
-          setState(() => _imageSizes[url] = Size(
-              img.width.toDouble(), img.height.toDouble()));
+          setState(() => _imageSizes[url] =
+              Size(img.width.toDouble(), img.height.toDouble()));
         }
       } catch (_) {
-        if (mounted) {
-          setState(() => _imageSizes[url] = const Size(1, 1));
-        }
+        if (mounted) setState(() => _imageSizes[url] = const Size(1, 1));
       }
     }
     if (mounted) setState(() => _sizesResolved = true);
@@ -101,8 +97,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   //   capped at 80% of screen height
   double _resolvedViewerHeight(List<String> urls) {
     if (_imageSizes.isEmpty) return 300;
-    final screenW = MediaQuery.of(context).size.width;
-    final maxScreenH = MediaQuery.of(context).size.height * 0.80;
+    final screenW  = MediaQuery.of(context).size.width;
+    final maxScreen = MediaQuery.of(context).size.height * 0.80;
 
     double maxH = 0;
     for (final url in urls) {
@@ -112,7 +108,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       final renderedH = screenW / aspect;
       if (renderedH > maxH) maxH = renderedH;
     }
-    return maxH.clamp(180.0, maxScreenH);
+    return maxH.clamp(180.0, maxScreen);
   }
 
   Future<void> _toggleLike() async {
@@ -149,6 +145,23 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     }
   }
 
+  bool get _isOwn =>
+      _post != null && _post!.authorId == authService.currentUserId;
+
+  // ── Edit post ────────────────────────────────────────────────────────────
+  Future<void> _editPost() async {
+    if (_post == null) return;
+    final updated = await Navigator.of(context).push<PostModel>(
+      MaterialPageRoute(
+        builder: (_) => UploadScreen(post: _post),
+        fullscreenDialog: true,
+      ),
+    );
+    if (updated != null && mounted) {
+      setState(() => _post = updated);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -164,11 +177,18 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             style: GoogleFonts.dmSans(
                 fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.dark)),
         actions: [
-          if (_post != null && _post!.authorId == authService.currentUserId)
+          if (_isOwn) ...[
+            IconButton(
+              icon: const Icon(Icons.edit_outlined, color: AppColors.peach),
+              tooltip: 'Edit post',
+              onPressed: _editPost,
+            ),
             IconButton(
               icon: const Icon(Icons.delete_outline, color: AppColors.errorRed),
+              tooltip: 'Delete post',
               onPressed: _confirmDeletePost,
             ),
+          ],
         ],
       ),
       body: _loading
@@ -220,17 +240,21 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                     fontSize: 22, fontWeight: FontWeight.w700, color: AppColors.dark)),
             const SizedBox(height: 6),
 
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppColors.peachPale,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppColors.peachLight),
+            Row(children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.peachPale,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.peachLight),
+                ),
+                child: Text(post.category,
+                    style: GoogleFonts.dmSans(
+                        fontSize: 11, color: AppColors.brown, fontWeight: FontWeight.w500)),
               ),
-              child: Text(post.category,
-                  style: GoogleFonts.dmSans(
-                      fontSize: 11, color: AppColors.brown, fontWeight: FontWeight.w500)),
-            ),
+              const SizedBox(width: 6),
+              _AgeRatingBadge(rating: post.ageRating),
+            ]),
             const SizedBox(height: 10),
 
             if (post.description.isNotEmpty) ...[
@@ -331,24 +355,22 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     );
   }
 
-  // ── Fix #9: dynamic height image viewer ─────────────────────────────────
+  // ── Dynamic height image viewer with swipe + counter badge ──────────────
   Widget _buildImageViewer(List<String> urls) {
     final isMulti = urls.length > 1;
 
-    // While we haven't resolved sizes yet, show a shimmer placeholder
     if (isMulti && !_sizesResolved) {
-      return Container(height: 300, color: AppColors.border,
+      return Container(
+          height: 300,
+          color: AppColors.border,
           child: const Center(child: CircularProgressIndicator(
               color: AppColors.peach, strokeWidth: 2)));
     }
 
-    final frameHeight = isMulti
-        ? _resolvedViewerHeight(urls)
-        : null; // single image: unconstrained (BoxFit.contain handles it)
+    final frameHeight = isMulti ? _resolvedViewerHeight(urls) : null;
 
     return Stack(
       children: [
-        // The actual image(s)
         SizedBox(
           height: frameHeight,
           width: double.infinity,
@@ -362,7 +384,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                     fit: BoxFit.contain,
                     width: double.infinity,
                     placeholder: (_, __) => Container(color: AppColors.border),
-                    errorWidget: (_, __, ___) => Container(color: AppColors.border,
+                    errorWidget: (_, __, ___) => Container(
+                        color: AppColors.border,
                         child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
                   ),
                 )
@@ -371,13 +394,13 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                   fit: BoxFit.contain,
                   width: double.infinity,
                   placeholder: (_, __) => Container(height: 300, color: AppColors.border),
-                  errorWidget: (_, __, ___) => Container(height: 300,
-                      color: AppColors.border,
+                  errorWidget: (_, __, ___) => Container(
+                      height: 300, color: AppColors.border,
                       child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
                 ),
         ),
 
-        // ── Counter badge: "2 / 5" top-right, only for multi-image ──────
+        // Counter badge — only for multi-image: "1 / 5"
         if (isMulti)
           Positioned(
             top: 12, right: 12,
@@ -390,13 +413,34 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               child: Text(
                 '${_currentImageIndex + 1} / ${urls.length}',
                 style: const TextStyle(
-                    color: Colors.white, fontSize: 12,
-                    fontWeight: FontWeight.w600),
+                    color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
               ),
             ),
           ),
 
-        // ── Left / Right chevron hints ───────────────────────────────────
+        // Dot indicator row — beneath the counter, above bottom edge
+        if (isMulti)
+          Positioned(
+            bottom: 10,
+            left: 0, right: 0,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: List.generate(urls.length, (i) => AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: _currentImageIndex == i ? 16 : 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  color: _currentImageIndex == i
+                      ? AppColors.peach
+                      : Colors.white.withOpacity(0.5),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              )),
+            ),
+          ),
+
+        // Left chevron
         if (isMulti && _currentImageIndex > 0)
           Positioned(
             left: 8, top: 0, bottom: 0,
@@ -416,6 +460,8 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               ),
             ),
           ),
+
+        // Right chevron
         if (isMulti && _currentImageIndex < urls.length - 1)
           Positioned(
             right: 8, top: 0, bottom: 0,
@@ -496,6 +542,35 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       await postService.deletePost(widget.postId);
       if (mounted) Navigator.of(context).pop();
     }
+  }
+}
+
+// ── Age-rating badge ──────────────────────────────────────────────────────────
+class _AgeRatingBadge extends StatelessWidget {
+  final String rating;
+  const _AgeRatingBadge({required this.rating});
+
+  Color get _color {
+    switch (rating) {
+      case '18+':  return const Color(0xFFF44336);
+      case 'NSFW': return const Color(0xFFFF9800);
+      default:     return const Color(0xFF4CAF50); // SFW
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: _color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _color.withOpacity(0.4)),
+      ),
+      child: Text(rating,
+          style: GoogleFonts.dmSans(
+              fontSize: 10, fontWeight: FontWeight.w700, color: _color)),
+    );
   }
 }
 
@@ -612,34 +687,4 @@ class _CommentTileState extends State<_CommentTile> {
     );
     if (ok == true) widget.onDelete();
   }
-}
-
-// Dart async helper
-class Completer<T> {
-  late T _value;
-  late Object _error;
-  bool _isCompleted = false;
-  bool _isError = false;
-
-  Future<T> get future async {
-    while (!_isCompleted && !_isError) {
-      await Future.delayed(const Duration(milliseconds: 10));
-    }
-    if (_isError) throw _error;
-    return _value;
-  }
-
-  void complete(T value) {
-    if (_isCompleted || _isError) return;
-    _value = value;
-    _isCompleted = true;
-  }
-
-  void completeError(Object error) {
-    if (_isCompleted || _isError) return;
-    _error = error;
-    _isError = true;
-  }
-
-  bool get isCompleted => _isCompleted || _isError;
 }

@@ -9,9 +9,11 @@ import 'screens/search_screen.dart';
 import 'screens/upload_screen.dart';
 import 'screens/dm_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/notifications_screen.dart';
+import 'services/supabase_service.dart';
 
 // ── IMPORTANT: Replace with your actual Supabase credentials ──────────────────
-const _supabaseUrl    = 'https://ylboyktduhpflhunkast.supabase.co';
+const _supabaseUrl     = 'https://ylboyktduhpflhunkast.supabase.co';
 const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlsYm95a3RkdWhwZmxodW5rYXN0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4NzcwMjgsImV4cCI6MjA5MTQ1MzAyOH0.3H4KynybNMFJC9WC51xWE-PfaV1gz-thOcT5hbQR71k';
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -19,7 +21,11 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
-
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FLUTTER ERROR: ${details.exception}');
+    debugPrint('STACK: ${details.stack}');
+  };
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -84,26 +90,47 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    HomeScreen(),
-    SearchScreen(),
-    SizedBox.shrink(), // Upload is modal
-    DMScreen(),
-    SettingsScreen(),
+  // Keys so we can call setState on child screens for refresh
+  final _homeKey   = GlobalKey<State<HomeScreen>>();
+  final _searchKey = GlobalKey<State<SearchScreen>>();
+
+  late final List<Widget> _screens = [
+    HomeScreen(key: _homeKey),
+    const SearchScreen(),
+    const SizedBox.shrink(), // Upload is modal
+    const DMScreen(),
+    const SettingsScreen(),
   ];
+
+  // Unread notification count shown on bell icon
+  int _unreadNotifs = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshUnreadCount();
+  }
+
+  Future<void> _refreshUnreadCount() async {
+    final count = await notificationService.getUnreadCount();
+    if (mounted) setState(() => _unreadNotifs = count);
+  }
 
   void _onTabTapped(int index) {
     if (index == 2) {
       Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => const UploadScreen(),
         fullscreenDialog: true,
-      )).then((_) {
-        // Refresh home feed after upload
-        if (_currentIndex == 0) setState(() {});
-      });
+      ));
       return;
     }
     setState(() => _currentIndex = index);
+  }
+
+  void _openNotifications() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => const NotificationsScreen()))
+        .then((_) => _refreshUnreadCount());
   }
 
   @override
@@ -120,8 +147,10 @@ class _MainShellState extends State<MainShell> {
   }
 
   PreferredSizeWidget _buildAppBar() {
-    final titles = ['ArtUp', 'Discover', '', 'Messages', 'Settings'];
-    final isLogo = [true, false, false, true, true];
+    final titles   = ['ArtUp', 'Discover', '', 'Messages', 'Settings'];
+    final isLogo   = [true, false, false, true, true];
+    final isHome   = _currentIndex == 0;
+    final isMsg    = _currentIndex == 3;
 
     return AppBar(
       backgroundColor: AppColors.warmWhite,
@@ -136,15 +165,38 @@ class _MainShellState extends State<MainShell> {
               style: GoogleFonts.dmSans(
                   fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.dark)),
       actions: [
-        if (_currentIndex == 0)
-          IconButton(
-            icon: const Icon(Icons.notifications_outlined, color: AppColors.peach),
-            onPressed: () {},
+        if (isHome) ...[
+          // Notification bell with badge
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.notifications_outlined, color: AppColors.peach),
+                onPressed: _openNotifications,
+              ),
+              if (_unreadNotifs > 0)
+                Positioned(
+                  top: 8, right: 8,
+                  child: Container(
+                    width: 16, height: 16,
+                    decoration: const BoxDecoration(
+                        color: AppColors.errorRed, shape: BoxShape.circle),
+                    alignment: Alignment.center,
+                    child: Text(
+                      _unreadNotifs > 9 ? '9+' : '$_unreadNotifs',
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 9,
+                          fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+            ],
           ),
-        if (_currentIndex == 3)
+        ],
+        if (isMsg)
           IconButton(
             icon: const Icon(Icons.edit_outlined, color: AppColors.peach),
-            onPressed: () {},
+            onPressed: () {}, // future: new conversation
           ),
       ],
       bottom: PreferredSize(
@@ -166,11 +218,11 @@ class _MainShellState extends State<MainShell> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _NavItem(icon: Icons.home_outlined, activeIcon: Icons.home, label: 'Home', index: 0, current: _currentIndex, onTap: _onTabTapped),
-              _NavItem(icon: Icons.search_outlined, activeIcon: Icons.search, label: 'Search', index: 1, current: _currentIndex, onTap: _onTabTapped),
+              _NavItem(icon: Icons.home_outlined,    activeIcon: Icons.home,        label: 'Home',   index: 0, current: _currentIndex, onTap: _onTabTapped),
+              _NavItem(icon: Icons.search_outlined,  activeIcon: Icons.search,      label: 'Search', index: 1, current: _currentIndex, onTap: _onTabTapped),
               _UploadBtn(onTap: () => _onTabTapped(2)),
-              _NavItem(icon: Icons.chat_bubble_outline, activeIcon: Icons.chat_bubble, label: 'DM', index: 3, current: _currentIndex, onTap: _onTabTapped),
-              _NavItem(icon: Icons.person_outline, activeIcon: Icons.person, label: 'Profile', index: 4, current: _currentIndex, onTap: _onTabTapped),
+              _NavItem(icon: Icons.chat_bubble_outline, activeIcon: Icons.chat_bubble, label: 'DM',  index: 3, current: _currentIndex, onTap: _onTabTapped),
+              _NavItem(icon: Icons.person_outline,   activeIcon: Icons.person,      label: 'Profile',index: 4, current: _currentIndex, onTap: _onTabTapped),
             ],
           ),
         ),
@@ -185,8 +237,10 @@ class _NavItem extends StatelessWidget {
   final int index, current;
   final ValueChanged<int> onTap;
 
-  const _NavItem({required this.icon, required this.activeIcon, required this.label,
-      required this.index, required this.current, required this.onTap});
+  const _NavItem({
+    required this.icon, required this.activeIcon, required this.label,
+    required this.index, required this.current, required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -197,10 +251,12 @@ class _NavItem extends StatelessWidget {
       child: SizedBox(
         width: 56,
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-          Icon(active ? activeIcon : icon, color: active ? AppColors.peach : AppColors.muted, size: 24),
+          Icon(active ? activeIcon : icon,
+              color: active ? AppColors.peach : AppColors.muted, size: 24),
           const SizedBox(height: 2),
           Text(label, style: GoogleFonts.dmSans(
-              fontSize: 9, fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+              fontSize: 9,
+              fontWeight: active ? FontWeight.w600 : FontWeight.w400,
               color: active ? AppColors.peach : AppColors.muted)),
         ]),
       ),
@@ -221,7 +277,9 @@ class _UploadBtn extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: const LinearGradient(colors: [AppColors.peach, AppColors.amber]),
           shape: BoxShape.circle,
-          boxShadow: [BoxShadow(color: AppColors.peach.withOpacity(0.4), blurRadius: 12, offset: const Offset(0, 4))],
+          boxShadow: [BoxShadow(
+              color: AppColors.peach.withOpacity(0.4),
+              blurRadius: 12, offset: const Offset(0, 4))],
         ),
         child: const Icon(Icons.add, color: Colors.white, size: 24),
       ),

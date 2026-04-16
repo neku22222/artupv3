@@ -141,6 +141,22 @@ class ProfileService {
         .map((r) => ProfileModel.fromMap(r['profile_stats'] as Map<String, dynamic>))
         .toList();
   }
+
+  // ── Linked Accounts ──────────────────────────────────────────────────────
+
+  Future<List<ProfileModel>> getLinkedAccounts(String userId) async {
+    try {
+      final res = await _db
+          .from('linked_accounts')
+          .select('linked_id, profile_stats!linked_accounts_linked_id_fkey(*)')
+          .eq('owner_id', userId);
+      return (res as List)
+          .map((r) => ProfileModel.fromMap(r['profile_stats'] as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
 }
 
 // ── POST SERVICE ──────────────────────────────────────────────────────────────
@@ -217,8 +233,17 @@ class PostService {
   }
 
   Future<PostModel> createPost(PostModel post) async {
-    final res = await _db.from('posts').insert(post.toInsertMap()).select().single();
+    final insertMap = post.toInsertMap();
+    // Ensure image_urls is always a proper List (not a String)
+    final imageUrlsList = post.imageUrls;
+    insertMap['image_urls'] = imageUrlsList;
+    final res = await _db.from('posts').insert(insertMap).select().single();
     return PostModel.fromMap(res);
+  }
+
+  /// Edit an existing post (title, description, category, tags, visibility, age_rating)
+  Future<void> editPost(PostModel post) async {
+    await _db.from('posts').update(post.toEditMap()).eq('id', post.id);
   }
 
   Future<void> deletePost(String postId) async {
@@ -327,10 +352,60 @@ class DMService {
   }
 }
 
+// ── NOTIFICATION SERVICE ──────────────────────────────────────────────────────
+// Uses the 'notifications' table (see SQL migration below).
+// Falls back gracefully if the table doesn't exist yet.
+
+class NotificationService {
+  Future<List<NotificationModel>> getNotifications({int limit = 30}) async {
+    final uid = _db.auth.currentUser?.id;
+    if (uid == null) return [];
+    try {
+      final res = await _db
+          .from('notifications')
+          .select()
+          .eq('recipient_id', uid)
+          .order('created_at', ascending: false)
+          .limit(limit);
+      return (res as List).map((m) => NotificationModel.fromMap(m)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<int> getUnreadCount() async {
+    final uid = _db.auth.currentUser?.id;
+    if (uid == null) return 0;
+    try {
+      final res = await _db
+          .from('notifications')
+          .select('id')
+          .eq('recipient_id', uid)
+          .eq('is_read', false);
+      return (res as List).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  Future<void> markAllRead() async {
+    final uid = _db.auth.currentUser?.id;
+    if (uid == null) return;
+    try {
+      await _db
+          .from('notifications')
+          .update({'is_read': true})
+          .eq('recipient_id', uid)
+          .eq('is_read', false);
+    } catch (_) {}
+  }
+}
+
 // ── Singletons ────────────────────────────────────────────────────────────────
-final authService    = AuthService();
-final storageService = StorageService();
-final profileService = ProfileService();
-final postService    = PostService();
-final commentService = CommentService();
-final dmService      = DMService();
+final authService         = AuthService();
+final storageService      = StorageService();
+final profileService      = ProfileService();
+final postService         = PostService();
+final commentService      = CommentService();
+final dmService           = DMService();
+final notificationService = NotificationService();

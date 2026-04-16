@@ -21,15 +21,25 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   ProfileModel? _profile;
   List<PostModel> _posts = [];
+  List<ProfileModel> _linkedAccounts = [];
   bool _loading = true;
   bool _isFollowing = false;
   bool _followLoading = false;
   bool get _isOwnProfile => authService.currentUserId == widget.userId;
 
+  // ScrollController for pull-to-refresh via scroll-to-top
+  final ScrollController _scrollCtrl = ScrollController();
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _scrollCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -38,48 +48,44 @@ class _ProfileScreenState extends State<ProfileScreen> {
         profileService.getProfile(widget.userId),
         postService.getPostsByAuthor(widget.userId),
         if (!_isOwnProfile) profileService.isFollowing(widget.userId),
+        profileService.getLinkedAccounts(widget.userId),
       ]);
       if (mounted) setState(() {
-        _profile     = results[0] as ProfileModel?;
-        _posts       = results[1] as List<PostModel>;
-        _isFollowing = _isOwnProfile ? false : (results.length > 2 ? results[2] as bool : false);
-        _loading     = false;
+        _profile        = results[0] as ProfileModel?;
+        _posts          = results[1] as List<PostModel>;
+        _isFollowing    = _isOwnProfile ? false : (results.length > 2 ? results[2] as bool : false);
+        _linkedAccounts = (results.length > 3 ? results[3] : []) as List<ProfileModel>;
+        _loading        = false;
       });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ── Fix #4: optimistic counter update ────────────────────────────────────
+  // ── Optimistic follow counter update ─────────────────────────────────────
   Future<void> _toggleFollow() async {
     if (_followLoading || _profile == null) return;
+    final nowFollowing = !_isFollowing;
     setState(() {
       _followLoading = true;
-      if (_isFollowing) {
-        _isFollowing = false;
-        _profile!.followersCount = (_profile!.followersCount - 1).clamp(0, 999999);
-      } else {
-        _isFollowing = true;
-        _profile!.followersCount += 1;
-      }
+      _isFollowing = nowFollowing;
+      _profile!.followersCount =
+          (nowFollowing ? _profile!.followersCount + 1 : _profile!.followersCount - 1)
+              .clamp(0, 999999);
     });
     try {
-      if (!_isFollowing) {
-        // we already flipped to false above, so if it's now false we just unfollowed
-        await profileService.unfollow(widget.userId);
-      } else {
+      if (nowFollowing) {
         await profileService.follow(widget.userId);
+      } else {
+        await profileService.unfollow(widget.userId);
       }
     } catch (_) {
-      // revert on error
+      // Revert on error
       setState(() {
-        if (_isFollowing) {
-          _isFollowing = false;
-          _profile!.followersCount = (_profile!.followersCount - 1).clamp(0, 999999);
-        } else {
-          _isFollowing = true;
-          _profile!.followersCount += 1;
-        }
+        _isFollowing = !nowFollowing;
+        _profile!.followersCount =
+            (nowFollowing ? _profile!.followersCount - 1 : _profile!.followersCount + 1)
+                .clamp(0, 999999);
       });
     } finally {
       if (mounted) setState(() => _followLoading = false);
@@ -95,7 +101,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ── Fix #7: change profile picture ───────────────────────────────────────
   Future<void> _changeAvatar() async {
     final picker = ImagePicker();
     final picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
@@ -104,38 +109,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final file = File(picked.path);
     final uid  = authService.currentUserId!;
 
-    // Optimistic UI: show local file immediately
-    final localUrl = picked.path;
-    setState(() => _profile!.avatarUrl = localUrl);
+    setState(() => _profile!.avatarUrl = picked.path);
 
     try {
       final url = await storageService.uploadAvatar(file, uid);
       await profileService.updateProfile(userId: uid, avatarUrl: url);
       if (mounted) setState(() => _profile!.avatarUrl = url);
     } catch (_) {
-      // revert
       if (mounted) _load();
     }
   }
 
-  // ── Stat column — tappable for own profile (followers + following) or
-  //    only following when viewing someone else ──────────────────────────────
   void _onStatTap(String type) {
     if (_profile == null) return;
-    final uid = _profile!.id;
+    final uid    = _profile!.id;
     final handle = _profile!.handle;
 
-    if (type == 'followers' && _isOwnProfile) {
+    if (type == 'followers') {
       Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => FollowListScreen(
               userId: uid, type: FollowListType.followers, handle: handle)));
     } else if (type == 'following') {
-      // both own + others can view following
       Navigator.of(context).push(MaterialPageRoute(
           builder: (_) => FollowListScreen(
               userId: uid, type: FollowListType.following, handle: handle)));
     }
-    // posts count — no action needed
   }
 
   @override
@@ -146,33 +144,44 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
           : _profile == null
               ? const EmptyState(emoji: '😕', title: 'User not found', subtitle: '')
-              : CustomScrollView(slivers: [
-                  _buildAppBar(),
-                  SliverToBoxAdapter(child: _buildProfileInfo()),
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                    sliver: _posts.isEmpty
-                        ? const SliverToBoxAdapter(
-                            child: EmptyState(
-                                emoji: '🎨',
-                                title: 'No posts yet',
-                                subtitle: 'This artist hasn\'t posted anything yet'))
-                        : SliverGrid(
-                            delegate: SliverChildBuilderDelegate(
-                              (_, i) => PostCard(
-                                post: _posts[i],
-                                onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                                    builder: (_) => PostDetailScreen(postId: _posts[i].id))),
+              : RefreshIndicator(
+                  color: AppColors.peach,
+                  onRefresh: _load,
+                  child: CustomScrollView(
+                    controller: _scrollCtrl,
+                    slivers: [
+                      _buildAppBar(),
+                      SliverToBoxAdapter(child: _buildProfileInfo()),
+                      // Linked accounts strip
+                      if (_linkedAccounts.isNotEmpty)
+                        SliverToBoxAdapter(child: _buildLinkedAccountsRow()),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                        sliver: _posts.isEmpty
+                            ? const SliverToBoxAdapter(
+                                child: EmptyState(
+                                    emoji: '🎨',
+                                    title: 'No posts yet',
+                                    subtitle: 'This artist hasn\'t posted anything yet'))
+                            : SliverGrid(
+                                delegate: SliverChildBuilderDelegate(
+                                  (_, i) => PostCard(
+                                    post: _posts[i],
+                                    onTap: () => Navigator.of(context).push(
+                                        MaterialPageRoute(
+                                            builder: (_) => PostDetailScreen(postId: _posts[i].id))),
+                                  ),
+                                  childCount: _posts.length,
+                                ),
+                                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 2, crossAxisSpacing: 8,
+                                  mainAxisSpacing: 8, childAspectRatio: 4 / 3,
+                                ),
                               ),
-                              childCount: _posts.length,
-                            ),
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 2, crossAxisSpacing: 8,
-                              mainAxisSpacing: 8, childAspectRatio: 4 / 3,
-                            ),
-                          ),
+                      ),
+                    ],
                   ),
-                ]),
+                ),
     );
   }
 
@@ -195,7 +204,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       padding: const EdgeInsets.all(20),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          // Avatar — tappable only on own profile
           Stack(
             children: [
               UserAvatar(url: p.avatarUrl, size: 72,
@@ -216,20 +224,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ],
           ),
           const Spacer(),
-          // Tappable stat columns
           _statCol('${p.postsCount}', 'Posts', null),
           const SizedBox(width: 20),
-          _statCol(
-            '${p.followersCount}',
-            'Followers',
-            _isOwnProfile ? () => _onStatTap('followers') : null,
-          ),
+          _statCol('${p.followersCount}', 'Followers',
+              () => _onStatTap('followers')),
           const SizedBox(width: 20),
-          _statCol(
-            '${p.followingCount}',
-            'Following',
-            () => _onStatTap('following'),
-          ),
+          _statCol('${p.followingCount}', 'Following',
+              () => _onStatTap('following')),
         ]),
         const SizedBox(height: 14),
         if (p.fullName.isNotEmpty)
@@ -315,21 +316,56 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // ── Linked accounts horizontal strip ─────────────────────────────────────
+  Widget _buildLinkedAccountsRow() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('LINKED ACCOUNTS',
+            style: GoogleFonts.dmSans(
+                fontSize: 10, fontWeight: FontWeight.w700,
+                color: AppColors.muted, letterSpacing: 0.8)),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 70,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: _linkedAccounts.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, i) {
+              final acc = _linkedAccounts[i];
+              return GestureDetector(
+                onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => ProfileScreen(userId: acc.id))),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  UserAvatar(url: acc.avatarUrl, size: 44),
+                  const SizedBox(height: 4),
+                  Text('@${acc.handle}',
+                      style: GoogleFonts.dmSans(
+                          fontSize: 9, color: AppColors.muted,
+                          fontWeight: FontWeight.w500),
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                ]),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Divider(color: AppColors.border),
+      ]),
+    );
+  }
+
   Widget _statCol(String value, String label, VoidCallback? onTap) {
-    final tappable = onTap != null;
     return GestureDetector(
       onTap: onTap,
       child: Column(children: [
         Text(value,
             style: GoogleFonts.dmSans(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: tappable ? AppColors.peach : AppColors.dark)),
+                fontSize: 16, fontWeight: FontWeight.w700, color: AppColors.dark)),
         Text(label,
             style: GoogleFonts.dmSans(
-                fontSize: 11,
-                color: tappable ? AppColors.peach : AppColors.muted,
-                decoration: tappable ? TextDecoration.underline : null)),
+                fontSize: 11, color: AppColors.muted)),
       ]),
     );
   }

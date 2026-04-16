@@ -6,6 +6,7 @@ import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
 import 'post_detail_screen.dart';
 import 'profile_screen.dart';
+import 'notifications_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,59 +20,79 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = true;
   bool _loadingMore = false;
   int _offset = 0;
-  static const _limit = 20;
-  final _scrollCtrl = ScrollController();
+  static const int _pageSize = 20;
+  bool _hasMore = true;
+
+  final ScrollController _scrollCtrl = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    _loadFeed();
+    _loadInitial();
     _scrollCtrl.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    _scrollCtrl.removeListener(_onScroll);
     _scrollCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _loadFeed({bool refresh = false}) async {
-    if (refresh) setState(() { _posts = []; _offset = 0; _loading = true; });
+  void _onScroll() {
+    // Infinite scroll: load more when near bottom
+    if (_scrollCtrl.position.pixels >=
+            _scrollCtrl.position.maxScrollExtent - 200 &&
+        !_loadingMore && _hasMore) {
+      _loadMore();
+    }
+  }
+
+  Future<void> _loadInitial() async {
+    setState(() { _loading = true; _offset = 0; _hasMore = true; });
     try {
-      final posts = await postService.getFeed(limit: _limit, offset: refresh ? 0 : _offset);
+      final posts = await postService.getFeed(limit: _pageSize, offset: 0);
       if (mounted) setState(() {
-        _posts = refresh ? posts : [..._posts, ...posts];
-        _offset = _posts.length;
+        _posts   = posts;
+        _offset  = posts.length;
+        _hasMore = posts.length == _pageSize;
         _loading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final more = await postService.getFeed(limit: _pageSize, offset: _offset);
+      if (mounted) setState(() {
+        _posts.addAll(more);
+        _offset += more.length;
+        _hasMore = more.length == _pageSize;
         _loadingMore = false;
       });
-    } catch (e) {
-      if (mounted) setState(() { _loading = false; _loadingMore = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loadingMore = false);
     }
   }
 
-  void _onScroll() {
-    if (_scrollCtrl.position.pixels >= _scrollCtrl.position.maxScrollExtent - 200
-        && !_loadingMore && !_loading) {
-      setState(() => _loadingMore = true);
-      _loadFeed();
-    }
-  }
+  /// Pull-to-refresh
+  Future<void> _onRefresh() => _loadInitial();
 
-  Future<void> _handleLike(PostModel post) async {
+  /// Like/unlike with optimistic update
+  Future<void> _likePost(PostModel post) async {
     final wasLiked = post.isLiked;
     setState(() {
       post.isLiked = !wasLiked;
       post.likesCount += wasLiked ? -1 : 1;
     });
     try {
-      if (wasLiked) {
-        await postService.unlikePost(post.id);
-      } else {
-        await postService.likePost(post.id);
-      }
+      if (wasLiked) await postService.unlikePost(post.id);
+      else await postService.likePost(post.id);
     } catch (_) {
-      // Revert on error
       setState(() {
         post.isLiked = wasLiked;
         post.likesCount += wasLiked ? 1 : -1;
@@ -79,60 +100,53 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _openPost(PostModel post) {
-    Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => PostDetailScreen(postId: post.id)));
-  }
-
-  void _openProfile(String authorId) {
-    Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => ProfileScreen(userId: authorId)));
-  }
-
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: AppColors.peach));
-
-    if (_posts.isEmpty) {
-      return const EmptyState(
-        emoji: '🎨',
-        title: 'No posts yet',
-        subtitle: 'Be the first to share your artwork!',
-      );
-    }
-
-    return RefreshIndicator(
-      color: AppColors.peach,
-      onRefresh: () => _loadFeed(refresh: true),
-      child: CustomScrollView(
-        controller: _scrollCtrl,
-        slivers: [
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
-            sliver: SliverGrid(
-              delegate: SliverChildBuilderDelegate(
-                (_, i) {
-                  if (i >= _posts.length) {
-                    return const Center(child: CircularProgressIndicator(color: AppColors.peach, strokeWidth: 2));
-                  }
-                  final post = _posts[i];
-                  return PostCard(
-                    post: post,
-                    onTap: () => _openPost(post),
-                    onAuthorTap: () => _openProfile(post.authorId),
-                    onLike: _handleLike,
-                  );
-                },
-                childCount: _loadingMore ? _posts.length + 1 : _posts.length,
-              ),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2, crossAxisSpacing: 8,
-                mainAxisSpacing: 8, childAspectRatio: 4 / 3,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+    return _loading
+        ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
+        : RefreshIndicator(
+            color: AppColors.peach,
+            onRefresh: _onRefresh,
+            child: _posts.isEmpty
+                ? ListView(
+                    children: const [
+                      SizedBox(height: 80),
+                      EmptyState(
+                          emoji: '🎨',
+                          title: 'No artwork yet',
+                          subtitle: 'Follow artists or upload your first post!'),
+                    ],
+                  )
+                : GridView.builder(
+                    controller: _scrollCtrl,
+                    padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                      childAspectRatio: 4 / 3,
+                    ),
+                    itemCount: _posts.length + (_loadingMore ? 1 : 0),
+                    itemBuilder: (_, i) {
+                      if (i == _posts.length) {
+                        return const Center(
+                            child: Padding(
+                              padding: EdgeInsets.all(16),
+                              child: CircularProgressIndicator(
+                                  color: AppColors.peach, strokeWidth: 2),
+                            ));
+                      }
+                      final post = _posts[i];
+                      return PostCard(
+                        post: post,
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => PostDetailScreen(postId: post.id))),
+                        onAuthorTap: () => Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => ProfileScreen(userId: post.authorId))),
+                        onLike: _likePost,
+                      );
+                    },
+                  ),
+          );
   }
 }

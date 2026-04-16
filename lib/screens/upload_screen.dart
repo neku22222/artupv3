@@ -7,16 +7,26 @@ import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UploadScreen — create NEW post  (pass no arguments)
+// EditPostScreen — edit EXISTING  (pass post:)
+// ─────────────────────────────────────────────────────────────────────────────
+
 class UploadScreen extends StatefulWidget {
-  const UploadScreen({super.key});
+  /// If non-null the screen acts as an editor for an existing post.
+  final PostModel? post;
+  const UploadScreen({super.key, this.post});
+
+  bool get isEdit => post != null;
 
   @override
   State<UploadScreen> createState() => _UploadScreenState();
 }
 
 class _UploadScreenState extends State<UploadScreen> {
-  // ── Fix #8: up to 5 images ──────────────────────────────────────────────
-  final List<File> _images = [];
+  // ── Images ──────────────────────────────────────────────────────────────
+  final List<File> _newImages = []; // newly picked local files
+  List<String> _existingUrls  = []; // URLs already in DB (edit mode)
   static const int _maxImages = 5;
 
   final _titleCtrl = TextEditingController();
@@ -25,32 +35,71 @@ class _UploadScreenState extends State<UploadScreen> {
   List<String> _tags = [];
   int _visibility  = 0;
   String _category = '2D Illustration';
+  String _ageRating = 'SFW';
   bool _uploading  = false;
+
+  // 15 tag limit (feature #5)
+  static const int _maxTags = 15;
 
   final List<String> _categories = [
     '2D Illustration', '3D / CGI', 'Photography',
     'Traditional / Oil Paint', 'Sketch / Line Art', 'Animation / GIF',
   ];
 
+  final List<(String, String, Color)> _ageRatings = [
+    ('SFW',  '🌸 SFW',  const Color(0xFF4CAF50)),
+    ('NSFW', '🔞 NSFW', const Color(0xFFFF9800)),
+    ('18+',  '🔒 18+',  const Color(0xFFF44336)),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isEdit) {
+      final p = widget.post!;
+      _titleCtrl.text  = p.title;
+      _descCtrl.text   = p.description;
+      _tags            = List<String>.from(p.tags);
+      _category        = p.category;
+      _ageRating       = p.ageRating;
+      _existingUrls    = List<String>.from(p.imageUrls);
+      _visibility      = ['public', 'followers', 'private'].indexOf(p.visibility);
+      if (_visibility < 0) _visibility = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose(); _descCtrl.dispose(); _tagCtrl.dispose();
+    super.dispose();
+  }
+
+  int get _totalImages => _existingUrls.length + _newImages.length;
+
   Future<void> _pickImages() async {
-    if (_images.length >= _maxImages) {
+    if (_totalImages >= _maxImages) {
       _snack('Maximum $_maxImages images allowed');
       return;
     }
     final picker = ImagePicker();
-    final remaining = _maxImages - _images.length;
+    final remaining = _maxImages - _totalImages;
     final picked = await picker.pickMultiImage(imageQuality: 85, limit: remaining);
     if (picked.isNotEmpty) {
       setState(() {
         final toAdd = picked.take(remaining).map((x) => File(x.path));
-        _images.addAll(toAdd);
+        _newImages.addAll(toAdd);
       });
     }
   }
 
-  void _removeImage(int index) => setState(() => _images.removeAt(index));
+  void _removeExistingImage(int index) => setState(() => _existingUrls.removeAt(index));
+  void _removeNewImage(int index)      => setState(() => _newImages.removeAt(index));
 
   void _addTag() {
+    if (_tags.length >= _maxTags) {
+      _snack('Maximum $_maxTags tags allowed');
+      return;
+    }
     final tag = _tagCtrl.text.trim().replaceAll(' ', '');
     if (tag.isEmpty) return;
     final formatted = tag.startsWith('#') ? tag : '#$tag';
@@ -59,37 +108,68 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Future<void> _post() async {
-    if (_images.isEmpty) { _snack('Please select at least one image'); return; }
-    if (_titleCtrl.text.trim().isEmpty) { _snack('Please add a title'); return; }
+    if (_totalImages == 0 && !widget.isEdit) {
+      _snack('Please select at least one image');
+      return;
+    }
+    if (_titleCtrl.text.trim().isEmpty) {
+      _snack('Please add a title');
+      return;
+    }
 
     setState(() => _uploading = true);
     try {
       final uid = authService.currentUserId!;
 
-      // Upload all images in parallel
-      final uploadFutures = _images.map((f) => storageService.uploadPostImage(f, uid));
-      final imageUrls = await Future.wait(uploadFutures);
+      // Upload any newly picked images
+      List<String> newUrls = [];
+      if (_newImages.isNotEmpty) {
+        final uploadFutures = _newImages.map((f) => storageService.uploadPostImage(f, uid));
+        newUrls = List<String>.from(await Future.wait(uploadFutures));
+      }
 
-      await postService.createPost(PostModel(
-        id:          '',
-        authorId:    uid,
-        title:       _titleCtrl.text.trim(),
-        description: _descCtrl.text.trim(),
-        imageUrl:    imageUrls.first,  // primary = first image
-        imageUrls:   imageUrls,
-        category:    _category,
-        tags:        _tags,
-        visibility:  ['public', 'followers', 'private'][_visibility],
-        likesCount:  0,
-        createdAt:   DateTime.now(),
-      ));
+      // Final list = existing (reordered / pruned) + new
+      final allUrls = [..._existingUrls, ...newUrls];
 
-      if (mounted) {
-        _snack('Artwork posted! 🎉');
-        Navigator.of(context).pop();
+      if (widget.isEdit) {
+        // EDIT mode — update text fields only (images remain as original)
+        final p = widget.post!;
+        p.title       = _titleCtrl.text.trim();
+        p.description = _descCtrl.text.trim();
+        p.category    = _category;
+        p.tags        = _tags;
+        p.visibility  = ['public', 'followers', 'private'][_visibility];
+        p.ageRating   = _ageRating;
+        await postService.editPost(p);
+        if (mounted) {
+          _snack('Post updated! ✅');
+          Navigator.of(context).pop(p); // return updated post
+        }
+      } else {
+        // CREATE mode
+        await postService.createPost(PostModel(
+          id:          '',
+          authorId:    uid,
+          title:       _titleCtrl.text.trim(),
+          description: _descCtrl.text.trim(),
+          imageUrl:    allUrls.isNotEmpty ? allUrls.first : '',
+          imageUrls:   allUrls,
+          category:    _category,
+          tags:        _tags,
+          visibility:  ['public', 'followers', 'private'][_visibility],
+          likesCount:  0,
+          createdAt:   DateTime.now(),
+          ageRating:   _ageRating,
+        ));
+        if (mounted) {
+          _snack('Artwork posted! 🎉');
+          Navigator.of(context).pop(true);
+        }
       }
     } catch (e) {
       if (mounted) _snack('Failed to post: ${e.toString()}');
+      // Do NOT re-throw — the upload might have succeeded partially;
+      // let user see the error snackbar and close manually.
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -100,12 +180,6 @@ class _UploadScreenState extends State<UploadScreen> {
         content: Text(msg),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
-  }
-
-  @override
-  void dispose() {
-    _titleCtrl.dispose(); _descCtrl.dispose(); _tagCtrl.dispose();
-    super.dispose();
   }
 
   @override
@@ -120,7 +194,7 @@ class _UploadScreenState extends State<UploadScreen> {
           icon: const Icon(Icons.close, color: AppColors.dark),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: Text('New Post',
+        title: Text(widget.isEdit ? 'Edit Post' : 'New Post',
             style: GoogleFonts.dmSans(
                 fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.dark)),
         bottom: PreferredSize(
@@ -130,9 +204,15 @@ class _UploadScreenState extends State<UploadScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Image picker area ──────────────────────────────────────────
-          _buildImagePicker(),
-          const SizedBox(height: 16),
+          // ── Image picker (hidden in edit mode since images are fixed) ───
+          if (!widget.isEdit) ...[
+            _buildImagePicker(),
+            const SizedBox(height: 16),
+          ] else ...[
+            // Show existing images as non-editable preview in edit mode
+            _buildExistingImagesPreview(),
+            const SizedBox(height: 16),
+          ],
 
           _label('Title'),
           const SizedBox(height: 5),
@@ -152,7 +232,15 @@ class _UploadScreenState extends State<UploadScreen> {
                   hintText: 'Share your process, inspiration, tools…')),
           const SizedBox(height: 14),
 
-          _label('Tags'),
+          // ── Tags (max 15) ───────────────────────────────────────────────
+          Row(children: [
+            _label('Tags'),
+            const SizedBox(width: 6),
+            Text('${_tags.length} / $_maxTags',
+                style: GoogleFonts.dmSans(
+                    fontSize: 10, color: _tags.length >= _maxTags
+                        ? AppColors.errorRed : AppColors.muted)),
+          ]),
           const SizedBox(height: 5),
           Row(children: [
             Expanded(
@@ -160,17 +248,23 @@ class _UploadScreenState extends State<UploadScreen> {
                 controller: _tagCtrl,
                 style: GoogleFonts.dmSans(fontSize: 14, color: AppColors.dark),
                 onSubmitted: (_) => _addTag(),
-                decoration: const InputDecoration(
-                    hintText: 'Add a tag…', prefixText: '#'),
+                enabled: _tags.length < _maxTags,
+                decoration: InputDecoration(
+                    hintText: _tags.length >= _maxTags
+                        ? 'Limit reached'
+                        : 'Add a tag…',
+                    prefixText: '#'),
               ),
             ),
             const SizedBox(width: 8),
             GestureDetector(
-              onTap: _addTag,
+              onTap: _tags.length < _maxTags ? _addTag : null,
               child: Container(
                 padding: const EdgeInsets.all(10),
-                decoration: const BoxDecoration(
-                    color: AppColors.peach, shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                    color: _tags.length < _maxTags
+                        ? AppColors.peach : AppColors.muted,
+                    shape: BoxShape.circle),
                 child: const Icon(Icons.add, color: Colors.white, size: 18),
               ),
             ),
@@ -186,8 +280,7 @@ class _UploadScreenState extends State<UploadScreen> {
                                 fontSize: 11, color: AppColors.brown)),
                         backgroundColor: AppColors.peachPale,
                         side: const BorderSide(color: AppColors.peachLight),
-                        deleteIcon:
-                            const Icon(Icons.close, size: 14, color: AppColors.muted),
+                        deleteIcon: const Icon(Icons.close, size: 14, color: AppColors.muted),
                         onDeleted: () => setState(() => _tags.remove(t)),
                         visualDensity: VisualDensity.compact,
                       ))
@@ -219,6 +312,35 @@ class _UploadScreenState extends State<UploadScreen> {
           ),
           const SizedBox(height: 14),
 
+          // ── Age Rating ────────────────────────────────────────────────
+          _label('Age Rating'),
+          const SizedBox(height: 8),
+          Row(children: _ageRatings.map(((String key, String label, Color col) r) {
+            final selected = _ageRating == r.$1;
+            return Expanded(
+              child: GestureDetector(
+                onTap: () => setState(() => _ageRating = r.$1),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  margin: const EdgeInsets.only(right: 6),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: selected ? r.$3.withOpacity(0.15) : AppColors.cardBg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: selected ? r.$3 : AppColors.border, width: 1.5),
+                  ),
+                  child: Text(r.$2,
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.dmSans(
+                          fontSize: 11, fontWeight: FontWeight.w600,
+                          color: selected ? r.$3 : AppColors.muted)),
+                ),
+              ),
+            );
+          }).toList()),
+          const SizedBox(height: 14),
+
           _label('Visibility'),
           const SizedBox(height: 5),
           Row(children: [
@@ -231,7 +353,9 @@ class _UploadScreenState extends State<UploadScreen> {
           const SizedBox(height: 24),
 
           GradientButton(
-              label: _uploading ? 'Posting…' : 'Post Artwork',
+              label: _uploading
+                  ? (widget.isEdit ? 'Saving…' : 'Posting…')
+                  : (widget.isEdit ? 'Save Changes' : 'Post Artwork'),
               onPressed: _post,
               loading: _uploading),
           const SizedBox(height: 24),
@@ -240,17 +364,38 @@ class _UploadScreenState extends State<UploadScreen> {
     );
   }
 
-  // ── Fix #8: multi-image grid picker ──────────────────────────────────────
+  // ── Existing images preview (edit mode) ──────────────────────────────────
+  Widget _buildExistingImagesPreview() {
+    if (_existingUrls.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _label('Images (cannot be changed after posting)'),
+      const SizedBox(height: 8),
+      SizedBox(
+        height: 80,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          itemCount: _existingUrls.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (_, i) => ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Image.network(_existingUrls[i],
+                width: 80, height: 80, fit: BoxFit.cover),
+          ),
+        ),
+      ),
+    ]);
+  }
+
+  // ── Multi-image grid picker ───────────────────────────────────────────────
   Widget _buildImagePicker() {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
         _label('Images'),
-        Text('${_images.length} / $_maxImages',
+        Text('$_totalImages / $_maxImages',
             style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
       ]),
       const SizedBox(height: 8),
-      if (_images.isEmpty)
-        // Empty state — tap to pick
+      if (_totalImages == 0)
         GestureDetector(
           onTap: _pickImages,
           child: Container(
@@ -277,18 +422,17 @@ class _UploadScreenState extends State<UploadScreen> {
           ),
         )
       else
-        // Grid of selected images + add button
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 3, crossAxisSpacing: 6, mainAxisSpacing: 6),
-          itemCount: _images.length < _maxImages
-              ? _images.length + 1
-              : _images.length,
+          itemCount: _totalImages < _maxImages
+              ? _totalImages + 1
+              : _totalImages,
           itemBuilder: (_, i) {
-            // Last cell = add button (if under limit)
-            if (i == _images.length) {
+            // Add-more button
+            if (i == _totalImages && _totalImages < _maxImages) {
               return GestureDetector(
                 onTap: _pickImages,
                 child: Container(
@@ -304,38 +448,41 @@ class _UploadScreenState extends State<UploadScreen> {
                 ),
               );
             }
-            // Image cell with remove button
+            // Existing URL images first
+            final isExisting = i < _existingUrls.length;
+            final label = i == 0 ? 'Cover' : null;
             return Stack(children: [
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
-                child: Image.file(_images[i],
-                    fit: BoxFit.cover,
-                    width: double.infinity,
-                    height: double.infinity),
+                child: isExisting
+                    ? Image.network(_existingUrls[i],
+                        fit: BoxFit.cover,
+                        width: double.infinity, height: double.infinity)
+                    : Image.file(_newImages[i - _existingUrls.length],
+                        fit: BoxFit.cover,
+                        width: double.infinity, height: double.infinity),
               ),
-              // First image badge
-              if (i == 0)
+              if (label != null)
                 Positioned(
                   top: 4, left: 4,
                   child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                     decoration: BoxDecoration(
                       color: AppColors.peach,
                       borderRadius: BorderRadius.circular(6),
                     ),
-                    child: Text('Cover',
+                    child: Text(label,
                         style: GoogleFonts.dmSans(
-                            fontSize: 8,
-                            fontWeight: FontWeight.w700,
+                            fontSize: 8, fontWeight: FontWeight.w700,
                             color: Colors.white)),
                   ),
                 ),
-              // Remove button
               Positioned(
                 top: 4, right: 4,
                 child: GestureDetector(
-                  onTap: () => _removeImage(i),
+                  onTap: () => isExisting
+                      ? _removeExistingImage(i)
+                      : _removeNewImage(i - _existingUrls.length),
                   child: Container(
                     decoration: const BoxDecoration(
                         color: Colors.black54, shape: BoxShape.circle),
@@ -353,10 +500,8 @@ class _UploadScreenState extends State<UploadScreen> {
   Widget _label(String t) => Text(
         t.toUpperCase(),
         style: GoogleFonts.dmSans(
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-            color: AppColors.muted,
-            letterSpacing: 0.5),
+            fontSize: 10, fontWeight: FontWeight.w700,
+            color: AppColors.muted, letterSpacing: 0.5),
       );
 
   Widget _visBtn(String label, int index) => Expanded(
@@ -375,8 +520,7 @@ class _UploadScreenState extends State<UploadScreen> {
             child: Text(label,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.dmSans(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
+                    fontSize: 11, fontWeight: FontWeight.w500,
                     color: _visibility == index ? Colors.white : AppColors.muted)),
           ),
         ),
