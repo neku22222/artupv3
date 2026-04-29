@@ -1001,18 +1001,6 @@ class _CreditsPage extends StatelessWidget {
           ]),
           const SizedBox(height: 16),
 
-          // Open source
-          _card(children: [
-            _cardTitle('Open Source Libraries'),
-            const SizedBox(height: 8),
-            _libRow('supabase_flutter'),
-            _libRow('google_fonts'),
-            _libRow('cached_network_image'),
-            _libRow('image_picker'),
-            _libRow('timeago'),
-            _libRow('uuid'),
-          ]),
-
           const SizedBox(height: 32),
           Text('© 2025 ArtUp. All rights reserved.',
               style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted),
