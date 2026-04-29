@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 import '../models.dart';
+import '../services/settings_service.dart';
 
 SupabaseClient get _db => Supabase.instance.client;
 const _uuid = Uuid();
@@ -161,12 +162,19 @@ class ProfileService {
 
 // ── POST SERVICE ──────────────────────────────────────────────────────────────
 
+bool get _sfwOnly => SettingsService.ageRating == 'All Ages';
+
 class PostService {
   Future<List<PostModel>> getFeed({int limit = 20, int offset = 0}) async {
     final uid = _db.auth.currentUser?.id;
-    final res = await _db
-        .from('posts_with_author').select()
-        .eq('visibility', 'public')
+    var query = _db
+        .from('posts_with_author')
+        .select()
+        .eq('visibility', 'public');
+
+    if (_sfwOnly) query = query.eq('age_rating', 'SFW');
+
+    final res = await query
         .order('created_at', ascending: false)
         .range(offset, offset + limit - 1);
     final posts = (res as List).map((m) => PostModel.fromMap(m)).toList();
@@ -176,10 +184,14 @@ class PostService {
 
   Future<List<PostModel>> getPostsByAuthor(String authorId) async {
     final uid = _db.auth.currentUser?.id;
-    final res = await _db
-        .from('posts_with_author').select()
-        .eq('author_id', authorId)
-        .order('created_at', ascending: false);
+    var query = _db
+        .from('posts_with_author')
+        .select()
+        .eq('author_id', authorId);
+
+    if (_sfwOnly) query = query.eq('age_rating', 'SFW');
+
+    final res = await query.order('created_at', ascending: false);
     final posts = (res as List).map((m) => PostModel.fromMap(m)).toList();
     if (uid != null) await _attachLikedStatus(posts, uid);
     return posts;
@@ -187,11 +199,15 @@ class PostService {
 
   Future<List<PostModel>> searchPosts(String query) async {
     final uid = _db.auth.currentUser?.id;
-    final res = await _db
-        .from('posts_with_author').select()
+    var q = _db
+        .from('posts_with_author')
+        .select()
         .eq('visibility', 'public')
-        .or('title.ilike.%$query%,category.ilike.%$query%,description.ilike.%$query%')
-        .order('created_at', ascending: false).limit(30);
+        .or('title.ilike.%$query%,category.ilike.%$query%,description.ilike.%$query%');
+
+    if (_sfwOnly) q = q.eq('age_rating', 'SFW');
+
+    final res = await q.order('created_at', ascending: false).limit(30);
     final posts = (res as List).map((m) => PostModel.fromMap(m)).toList();
     if (uid != null) await _attachLikedStatus(posts, uid);
     return posts;
@@ -199,23 +215,30 @@ class PostService {
 
   Future<List<PostModel>> searchByTag(String tag) async {
     final uid = _db.auth.currentUser?.id;
-    final res = await _db
-        .from('posts_with_author').select()
+    var query = _db
+        .from('posts_with_author')
+        .select()
         .eq('visibility', 'public')
-        .contains('tags', [tag])
-        .order('likes_count', ascending: false)
-        .limit(30);
+        .contains('tags', [tag]);
+
+    if (_sfwOnly) query = query.eq('age_rating', 'SFW');
+
+    final res = await query.order('likes_count', ascending: false).limit(30);
     final posts = (res as List).map((m) => PostModel.fromMap(m)).toList();
     if (uid != null) await _attachLikedStatus(posts, uid);
     return posts;
   }
 
-  /// Fetch the single most-liked post for a tag — used for tag card thumbnails
   Future<PostModel?> getTopPostForTag(String tag) async {
-    final res = await _db
-        .from('posts_with_author').select()
+    var query = _db
+        .from('posts_with_author')
+        .select()
         .eq('visibility', 'public')
-        .contains('tags', [tag])
+        .contains('tags', [tag]);
+
+    if (_sfwOnly) query = query.eq('age_rating', 'SFW');
+
+    final res = await query
         .order('likes_count', ascending: false)
         .limit(1)
         .maybeSingle();
@@ -234,7 +257,6 @@ class PostService {
 
   Future<PostModel> createPost(PostModel post) async {
     final insertMap = post.toInsertMap();
-    // Ensure image_urls is always a proper List (not a String)
     final imageUrlsList = post.imageUrls;
     insertMap['image_urls'] = imageUrlsList;
     final res = await _db.from('posts').insert(insertMap).select().single();
@@ -353,8 +375,6 @@ class DMService {
 }
 
 // ── NOTIFICATION SERVICE ──────────────────────────────────────────────────────
-// Uses the 'notifications' table (see SQL migration below).
-// Falls back gracefully if the table doesn't exist yet.
 
 class NotificationService {
   Future<List<NotificationModel>> getNotifications({int limit = 30}) async {

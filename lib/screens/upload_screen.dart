@@ -6,14 +6,16 @@ import '../models.dart';
 import '../services/supabase_service.dart';
 import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
+import 'post_detail_screen.dart';
+import 'dm_screen.dart';
+import 'followers_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UploadScreen — create NEW post  (pass no arguments)
-// EditPostScreen — edit EXISTING  (pass post:)
+//              — edit EXISTING   (pass post:)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class UploadScreen extends StatefulWidget {
-  /// If non-null the screen acts as an editor for an existing post.
   final PostModel? post;
   const UploadScreen({super.key, this.post});
 
@@ -25,8 +27,8 @@ class UploadScreen extends StatefulWidget {
 
 class _UploadScreenState extends State<UploadScreen> {
   // ── Images ──────────────────────────────────────────────────────────────
-  final List<File> _newImages = []; // newly picked local files
-  List<String> _existingUrls  = []; // URLs already in DB (edit mode)
+  final List<File> _newImages = [];
+  List<String> _existingUrls  = [];
   static const int _maxImages = 5;
 
   final _titleCtrl = TextEditingController();
@@ -38,7 +40,6 @@ class _UploadScreenState extends State<UploadScreen> {
   String _ageRating = 'SFW';
   bool _uploading  = false;
 
-  // 15 tag limit (feature #5)
   static const int _maxTags = 15;
 
   final List<String> _categories = [
@@ -46,10 +47,10 @@ class _UploadScreenState extends State<UploadScreen> {
     'Traditional / Oil Paint', 'Sketch / Line Art', 'Animation / GIF',
   ];
 
+  /// Two rating options only: SFW and 18+
   final List<(String, String, Color)> _ageRatings = [
-    ('SFW',  '🌸 SFW',  const Color(0xFF4CAF50)),
-    ('NSFW', '🔞 NSFW', const Color(0xFFFF9800)),
-    ('18+',  '🔒 18+',  const Color(0xFFF44336)),
+    ('SFW', '🌸 Safe for Work',  const Color(0xFF4CAF50)),
+    ('18+', '🔒 18+ / Explicit', const Color(0xFFF44336)),
   ];
 
   @override
@@ -61,7 +62,8 @@ class _UploadScreenState extends State<UploadScreen> {
       _descCtrl.text   = p.description;
       _tags            = List<String>.from(p.tags);
       _category        = p.category;
-      _ageRating       = p.ageRating;
+      // Normalise legacy NSFW → 18+
+      _ageRating       = p.ageRating == 'NSFW' ? '18+' : p.ageRating;
       _existingUrls    = List<String>.from(p.imageUrls);
       _visibility      = ['public', 'followers', 'private'].indexOf(p.visibility);
       if (_visibility < 0) _visibility = 0;
@@ -81,9 +83,9 @@ class _UploadScreenState extends State<UploadScreen> {
       _snack('Maximum $_maxImages images allowed');
       return;
     }
-    final picker = ImagePicker();
+    final picker    = ImagePicker();
     final remaining = _maxImages - _totalImages;
-    final picked = await picker.pickMultiImage(imageQuality: 85, limit: remaining);
+    final picked    = await picker.pickMultiImage(imageQuality: 85, limit: remaining);
     if (picked.isNotEmpty) {
       setState(() {
         final toAdd = picked.take(remaining).map((x) => File(x.path));
@@ -121,18 +123,15 @@ class _UploadScreenState extends State<UploadScreen> {
     try {
       final uid = authService.currentUserId!;
 
-      // Upload any newly picked images
       List<String> newUrls = [];
       if (_newImages.isNotEmpty) {
         final uploadFutures = _newImages.map((f) => storageService.uploadPostImage(f, uid));
         newUrls = List<String>.from(await Future.wait(uploadFutures));
       }
 
-      // Final list = existing (reordered / pruned) + new
       final allUrls = [..._existingUrls, ...newUrls];
 
       if (widget.isEdit) {
-        // EDIT mode — update text fields only (images remain as original)
         final p = widget.post!;
         p.title       = _titleCtrl.text.trim();
         p.description = _descCtrl.text.trim();
@@ -143,10 +142,9 @@ class _UploadScreenState extends State<UploadScreen> {
         await postService.editPost(p);
         if (mounted) {
           _snack('Post updated! ✅');
-          Navigator.of(context).pop(p); // return updated post
+          Navigator.of(context).pop(p);
         }
       } else {
-        // CREATE mode
         await postService.createPost(PostModel(
           id:          '',
           authorId:    uid,
@@ -168,8 +166,6 @@ class _UploadScreenState extends State<UploadScreen> {
       }
     } catch (e) {
       if (mounted) _snack('Failed to post: ${e.toString()}');
-      // Do NOT re-throw — the upload might have succeeded partially;
-      // let user see the error snackbar and close manually.
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -204,12 +200,10 @@ class _UploadScreenState extends State<UploadScreen> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Image picker (hidden in edit mode since images are fixed) ───
           if (!widget.isEdit) ...[
             _buildImagePicker(),
             const SizedBox(height: 16),
           ] else ...[
-            // Show existing images as non-editable preview in edit mode
             _buildExistingImagesPreview(),
             const SizedBox(height: 16),
           ],
@@ -232,14 +226,14 @@ class _UploadScreenState extends State<UploadScreen> {
                   hintText: 'Share your process, inspiration, tools…')),
           const SizedBox(height: 14),
 
-          // ── Tags (max 15) ───────────────────────────────────────────────
+          // ── Tags ────────────────────────────────────────────────────────
           Row(children: [
             _label('Tags'),
             const SizedBox(width: 6),
             Text('${_tags.length} / $_maxTags',
                 style: GoogleFonts.dmSans(
-                    fontSize: 10, color: _tags.length >= _maxTags
-                        ? AppColors.errorRed : AppColors.muted)),
+                    fontSize: 10,
+                    color: _tags.length >= _maxTags ? AppColors.errorRed : AppColors.muted)),
           ]),
           const SizedBox(height: 5),
           Row(children: [
@@ -250,9 +244,7 @@ class _UploadScreenState extends State<UploadScreen> {
                 onSubmitted: (_) => _addTag(),
                 enabled: _tags.length < _maxTags,
                 decoration: InputDecoration(
-                    hintText: _tags.length >= _maxTags
-                        ? 'Limit reached'
-                        : 'Add a tag…',
+                    hintText: _tags.length >= _maxTags ? 'Limit reached' : 'Add a tag…',
                     prefixText: '#'),
               ),
             ),
@@ -262,8 +254,7 @@ class _UploadScreenState extends State<UploadScreen> {
               child: Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                    color: _tags.length < _maxTags
-                        ? AppColors.peach : AppColors.muted,
+                    color: _tags.length < _maxTags ? AppColors.peach : AppColors.muted,
                     shape: BoxShape.circle),
                 child: const Icon(Icons.add, color: Colors.white, size: 18),
               ),
@@ -273,18 +264,14 @@ class _UploadScreenState extends State<UploadScreen> {
             const SizedBox(height: 8),
             Wrap(
               spacing: 6, runSpacing: 6,
-              children: _tags
-                  .map((t) => Chip(
-                        label: Text(t,
-                            style: GoogleFonts.dmSans(
-                                fontSize: 11, color: AppColors.brown)),
-                        backgroundColor: AppColors.peachPale,
-                        side: const BorderSide(color: AppColors.peachLight),
-                        deleteIcon: const Icon(Icons.close, size: 14, color: AppColors.muted),
-                        onDeleted: () => setState(() => _tags.remove(t)),
-                        visualDensity: VisualDensity.compact,
-                      ))
-                  .toList(),
+              children: _tags.map((t) => Chip(
+                label: Text(t, style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.brown)),
+                backgroundColor: AppColors.peachPale,
+                side: const BorderSide(color: AppColors.peachLight),
+                deleteIcon: const Icon(Icons.close, size: 14, color: AppColors.muted),
+                onDeleted: () => setState(() => _tags.remove(t)),
+                visualDensity: VisualDensity.compact,
+              )).toList(),
             ),
           ],
           const SizedBox(height: 14),
@@ -312,7 +299,7 @@ class _UploadScreenState extends State<UploadScreen> {
           ),
           const SizedBox(height: 14),
 
-          // ── Age Rating ────────────────────────────────────────────────
+          // ── Age Rating (2 options) ────────────────────────────────────
           _label('Age Rating'),
           const SizedBox(height: 8),
           Row(children: _ageRatings.map(((String key, String label, Color col) r) {
@@ -323,9 +310,9 @@ class _UploadScreenState extends State<UploadScreen> {
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   margin: const EdgeInsets.only(right: 6),
-                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
                   decoration: BoxDecoration(
-                    color: selected ? r.$3.withOpacity(0.15) : AppColors.cardBg,
+                    color: selected ? r.$3.withOpacity(0.12) : AppColors.cardBg,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                         color: selected ? r.$3 : AppColors.border, width: 1.5),
@@ -404,9 +391,7 @@ class _UploadScreenState extends State<UploadScreen> {
             decoration: BoxDecoration(
               color: AppColors.peachPale,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                  color: AppColors.peachLight, width: 2,
-                  style: BorderStyle.solid),
+              border: Border.all(color: AppColors.peachLight, width: 2),
             ),
             child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
               const Icon(Icons.add_photo_alternate_outlined,
@@ -414,8 +399,7 @@ class _UploadScreenState extends State<UploadScreen> {
               const SizedBox(height: 8),
               Text('Tap to add images',
                   style: GoogleFonts.dmSans(
-                      fontSize: 14, fontWeight: FontWeight.w600,
-                      color: AppColors.brown)),
+                      fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.brown)),
               Text('Up to $_maxImages images · JPG, PNG',
                   style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
             ]),
@@ -427,11 +411,8 @@ class _UploadScreenState extends State<UploadScreen> {
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 3, crossAxisSpacing: 6, mainAxisSpacing: 6),
-          itemCount: _totalImages < _maxImages
-              ? _totalImages + 1
-              : _totalImages,
+          itemCount: _totalImages < _maxImages ? _totalImages + 1 : _totalImages,
           itemBuilder: (_, i) {
-            // Add-more button
             if (i == _totalImages && _totalImages < _maxImages) {
               return GestureDetector(
                 onTap: _pickImages,
@@ -439,16 +420,13 @@ class _UploadScreenState extends State<UploadScreen> {
                   decoration: BoxDecoration(
                     color: AppColors.peachPale,
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                        color: AppColors.peachLight, width: 1.5,
-                        style: BorderStyle.solid),
+                    border: Border.all(color: AppColors.peachLight, width: 1.5),
                   ),
                   child: const Icon(Icons.add_photo_alternate_outlined,
                       color: AppColors.peach, size: 28),
                 ),
               );
             }
-            // Existing URL images first
             final isExisting = i < _existingUrls.length;
             final label = i == 0 ? 'Cover' : null;
             return Stack(children: [
@@ -456,11 +434,11 @@ class _UploadScreenState extends State<UploadScreen> {
                 borderRadius: BorderRadius.circular(10),
                 child: isExisting
                     ? Image.network(_existingUrls[i],
-                        fit: BoxFit.cover,
-                        width: double.infinity, height: double.infinity)
+                    fit: BoxFit.cover,
+                    width: double.infinity, height: double.infinity)
                     : Image.file(_newImages[i - _existingUrls.length],
-                        fit: BoxFit.cover,
-                        width: double.infinity, height: double.infinity),
+                    fit: BoxFit.cover,
+                    width: double.infinity, height: double.infinity),
               ),
               if (label != null)
                 Positioned(
@@ -468,13 +446,10 @@ class _UploadScreenState extends State<UploadScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                     decoration: BoxDecoration(
-                      color: AppColors.peach,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
+                        color: AppColors.peach, borderRadius: BorderRadius.circular(6)),
                     child: Text(label,
                         style: GoogleFonts.dmSans(
-                            fontSize: 8, fontWeight: FontWeight.w700,
-                            color: Colors.white)),
+                            fontSize: 8, fontWeight: FontWeight.w700, color: Colors.white)),
                   ),
                 ),
               Positioned(
@@ -484,8 +459,7 @@ class _UploadScreenState extends State<UploadScreen> {
                       ? _removeExistingImage(i)
                       : _removeNewImage(i - _existingUrls.length),
                   child: Container(
-                    decoration: const BoxDecoration(
-                        color: Colors.black54, shape: BoxShape.circle),
+                    decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
                     padding: const EdgeInsets.all(3),
                     child: const Icon(Icons.close, color: Colors.white, size: 13),
                   ),
@@ -498,31 +472,30 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   Widget _label(String t) => Text(
-        t.toUpperCase(),
-        style: GoogleFonts.dmSans(
-            fontSize: 10, fontWeight: FontWeight.w700,
-            color: AppColors.muted, letterSpacing: 0.5),
-      );
+    t.toUpperCase(),
+    style: GoogleFonts.dmSans(
+        fontSize: 10, fontWeight: FontWeight.w700,
+        color: AppColors.muted, letterSpacing: 0.5),
+  );
 
   Widget _visBtn(String label, int index) => Expanded(
-        child: GestureDetector(
-          onTap: () => setState(() => _visibility = index),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(vertical: 9),
-            decoration: BoxDecoration(
-              color: _visibility == index ? AppColors.peach : AppColors.cardBg,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                  color: _visibility == index ? AppColors.peach : AppColors.border,
-                  width: 1.5),
-            ),
-            child: Text(label,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.dmSans(
-                    fontSize: 11, fontWeight: FontWeight.w500,
-                    color: _visibility == index ? Colors.white : AppColors.muted)),
-          ),
+    child: GestureDetector(
+      onTap: () => setState(() => _visibility = index),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        decoration: BoxDecoration(
+          color: _visibility == index ? AppColors.peach : AppColors.cardBg,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: _visibility == index ? AppColors.peach : AppColors.border, width: 1.5),
         ),
-      );
+        child: Text(label,
+            textAlign: TextAlign.center,
+            style: GoogleFonts.dmSans(
+                fontSize: 11, fontWeight: FontWeight.w500,
+                color: _visibility == index ? Colors.white : AppColors.muted)),
+      ),
+    ),
+  );
 }

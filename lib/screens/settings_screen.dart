@@ -3,22 +3,10 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models.dart';
 import '../services/supabase_service.dart';
+import '../services/settings_service.dart';
 import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
 import 'profile_screen.dart';
-
-// ── Preferences stored locally (would use SharedPreferences in production) ───
-class AppPrefs {
-  static String language       = 'English';
-  static String ageRating      = 'All Ages';   // 'All Ages' | '13+' | '17+' | '18+'
-  static bool   pushLikes      = true;
-  static bool   pushComments   = true;
-  static bool   pushFollows    = true;
-  static bool   pushMessages   = true;
-  static bool   darkMode       = false;
-  static String gridColumns    = '2';          // '2' | '3'
-  static bool   showLikeCounts = true;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -119,14 +107,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _group([
           _tile('🔔', const Color(0xFFFFF0D8), 'Notifications',
               onTap: () => _push(const _NotificationsPage())),
-          _tile('🖥️', const Color(0xFFEDE0FF), 'Display Settings',
-              onTap: () => _push(const _DisplayPage())),
-          _tile('🌐', const Color(0xFFE0EEFF), 'Language',
-              value: AppPrefs.language,
-              onTap: () async {
-                await _push(const _LanguagePage());
-                setState(() {});
-              }),
         ]),
 
         // ── Support ───────────────────────────────────────────────────────
@@ -203,7 +183,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECURITY PAGE
+// SECURITY PAGE — password change + age rating (synced with SettingsService)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SecurityPage extends StatefulWidget {
@@ -223,15 +203,19 @@ class _SecurityPageState extends State<_SecurityPage> {
   String? _error;
   String? _success;
 
-  // Age rating
-  String _selectedRating = AppPrefs.ageRating;
-  final _ratings = ['All Ages', '13+', '17+', '18+'];
-  final _ratingDesc = {
-    'All Ages': 'Show all content — no restrictions',
-    '13+':      'Hide content rated 17+ and 18+',
-    '17+':      'Hide content rated 18+ only',
-    '18+':      'Show everything including mature content',
+  static const _ratings = ['All Ages', '18+'];
+  static const _ratingDesc = {
+    'All Ages': 'Only safe-for-work content is shown',
+    '18+':      'All content including full nudity is shown',
   };
+
+  late String _selectedRating;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedRating = SettingsService.ageRating;
+  }
 
   @override
   void dispose() {
@@ -250,7 +234,7 @@ class _SecurityPageState extends State<_SecurityPage> {
     setState(() => _saving = true);
     try {
       await Supabase.instance.client.auth.updateUser(
-        UserAttributes(password: _newCtrl.text.trim()));
+          UserAttributes(password: _newCtrl.text.trim()));
       _currentCtrl.clear(); _newCtrl.clear(); _confirmCtrl.clear();
       setState(() => _success = 'Password updated successfully');
     } on AuthException catch (e) {
@@ -270,18 +254,17 @@ class _SecurityPageState extends State<_SecurityPage> {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // ── Change Password ────────────────────────────────────────────
           _card(children: [
             _cardTitle('Change Password'),
             const SizedBox(height: 16),
             _passField('Current password', _currentCtrl, _obscureCurrent,
-                () => setState(() => _obscureCurrent = !_obscureCurrent)),
+                    () => setState(() => _obscureCurrent = !_obscureCurrent)),
             const SizedBox(height: 12),
             _passField('New password', _newCtrl, _obscureNew,
-                () => setState(() => _obscureNew = !_obscureNew)),
+                    () => setState(() => _obscureNew = !_obscureNew)),
             const SizedBox(height: 12),
             _passField('Confirm new password', _confirmCtrl, _obscureConfirm,
-                () => setState(() => _obscureConfirm = !_obscureConfirm)),
+                    () => setState(() => _obscureConfirm = !_obscureConfirm)),
             if (_error != null) ...[
               const SizedBox(height: 10),
               _errorBox(_error!),
@@ -296,7 +279,6 @@ class _SecurityPageState extends State<_SecurityPage> {
 
           const SizedBox(height: 20),
 
-          // ── Age Rating ────────────────────────────────────────────────
           _card(children: [
             _cardTitle('Content Age Rating'),
             const SizedBox(height: 4),
@@ -308,7 +290,7 @@ class _SecurityPageState extends State<_SecurityPage> {
               return GestureDetector(
                 onTap: () => setState(() {
                   _selectedRating = r;
-                  AppPrefs.ageRating = r;
+                  SettingsService.ageRating = r;
                 }),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
@@ -378,7 +360,8 @@ class _LinkedAccountsPage extends StatefulWidget {
 }
 
 class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
-  List<ProfileModel> _linked = [];
+  List<ProfileModel> _linked  = [];
+  List<_PendingRequest> _pendingOutgoing = [];
   bool _loading = true;
   final _handleCtrl = TextEditingController();
   bool _adding = false;
@@ -390,8 +373,8 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
   void dispose() { _handleCtrl.dispose(); super.dispose(); }
 
   Future<void> _load() async {
+    setState(() => _loading = true);
     try {
-      // Fetch linked accounts from Supabase
       final res = await Supabase.instance.client
           .from('linked_accounts')
           .select('linked_id, profile_stats!linked_accounts_linked_id_fkey(*)')
@@ -399,7 +382,26 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
       final profiles = (res as List)
           .map((r) => ProfileModel.fromMap(r['profile_stats'] as Map<String, dynamic>))
           .toList();
-      if (mounted) setState(() { _linked = profiles; _loading = false; });
+
+      final pendingRes = await Supabase.instance.client
+          .from('notifications')
+          .select('id, actor_id, recipient_id, profile_stats!notifications_recipient_id_fkey(handle, avatar_url, full_name)')
+          .eq('type', 'link_request')
+          .eq('actor_id', widget.userId)
+          .eq('is_read', false);
+      final pending = (pendingRes as List).map((r) => _PendingRequest(
+        notifId: r['id'] as String,
+        recipientId: r['recipient_id'] as String,
+        handle: (r['profile_stats'] as Map?)?['handle'] ?? '',
+        avatarUrl: (r['profile_stats'] as Map?)?['avatar_url'] ?? '',
+        fullName: (r['profile_stats'] as Map?)?['full_name'] ?? '',
+      )).toList();
+
+      if (mounted) setState(() {
+        _linked           = profiles;
+        _pendingOutgoing  = pending;
+        _loading          = false;
+      });
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
@@ -423,15 +425,41 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
         setState(() => _adding = false);
         return;
       }
-      await Supabase.instance.client.from('linked_accounts')
-          .insert({'owner_id': widget.userId, 'linked_id': target.id});
+      if (_linked.any((p) => p.id == target.id)) {
+        _snack('@${target.handle} is already linked');
+        setState(() => _adding = false);
+        return;
+      }
+      if (_pendingOutgoing.any((p) => p.recipientId == target.id)) {
+        _snack('A request to @${target.handle} is already pending');
+        setState(() => _adding = false);
+        return;
+      }
+
+      await Supabase.instance.client.from('notifications').insert({
+        'recipient_id': target.id,
+        'actor_id':     widget.userId,
+        'type':         'link_request',
+        'is_read':      false,
+      });
+
       _handleCtrl.clear();
+      _snack('Link request sent to @${target.handle} ✉️');
       await _load();
     } catch (e) {
-      _snack('Failed to link account');
+      _snack('Failed to send request');
     } finally {
       if (mounted) setState(() => _adding = false);
     }
+  }
+
+  Future<void> _cancelRequest(_PendingRequest req) async {
+    await Supabase.instance.client
+        .from('notifications')
+        .delete()
+        .eq('id', req.notifId);
+    setState(() => _pendingOutgoing.removeWhere((r) => r.notifId == req.notifId));
+    _snack('Request cancelled');
   }
 
   Future<void> _remove(String linkedId) async {
@@ -441,8 +469,8 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
   }
 
   void _snack(String msg) => ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
+      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))));
 
   @override
   Widget build(BuildContext context) {
@@ -456,8 +484,9 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
             _cardTitle('About Linked Accounts'),
             const SizedBox(height: 6),
             Text(
-              'Link your other ArtUp accounts here — for example, an NSFW account separate from your main portfolio. '
-              'Linked accounts are publicly visible on your profile so followers can find your other work.',
+              'Link your other ArtUp accounts here — for example, an 18+ account separate from your '
+                  'main portfolio. When you send a link request, the other account will receive a '
+                  'notification and must accept before the link appears publicly on your profile.',
               style: GoogleFonts.dmSans(fontSize: 13, color: AppColors.muted, height: 1.6),
             ),
           ]),
@@ -486,7 +515,7 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
                   decoration: const BoxDecoration(color: AppColors.peach, shape: BoxShape.circle),
                   child: _adding
                       ? const SizedBox(width: 18, height: 18,
-                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                       : const Icon(Icons.add, color: Colors.white, size: 20),
                 ),
               ),
@@ -497,39 +526,89 @@ class _LinkedAccountsPageState extends State<_LinkedAccountsPage> {
 
           if (_loading)
             const Center(child: CircularProgressIndicator(color: AppColors.peach))
-          else if (_linked.isEmpty)
-            const EmptyState(emoji: '🔗', title: 'No linked accounts',
-                subtitle: 'Link your other ArtUp accounts above')
-          else
-            _card(children: [
-              _cardTitle('Linked (${_linked.length})'),
-              const SizedBox(height: 8),
-              ..._linked.map((p) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(children: [
-                  UserAvatar(url: p.avatarUrl, size: 40),
-                  const SizedBox(width: 12),
-                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(p.fullName.isNotEmpty ? p.fullName : '@${p.handle}',
-                        style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.dark)),
-                    Text('@${p.handle}',
-                        style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
-                  ])),
-                  GestureDetector(
-                    onTap: () => _remove(p.id),
-                    child: const Icon(Icons.link_off, color: AppColors.errorRed, size: 20),
-                  ),
-                ]),
-              )),
-            ]),
+          else ...[
+            if (_pendingOutgoing.isNotEmpty) ...[
+              _card(children: [
+                _cardTitle('Pending Requests (${_pendingOutgoing.length})'),
+                const SizedBox(height: 8),
+                ..._pendingOutgoing.map((req) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(children: [
+                    UserAvatar(url: req.avatarUrl, size: 40),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(req.fullName.isNotEmpty ? req.fullName : '@${req.handle}',
+                          style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.dark)),
+                      Text('@${req.handle}',
+                          style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
+                    ])),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.peachPale,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: AppColors.peachLight),
+                      ),
+                      child: Text('Pending',
+                          style: GoogleFonts.dmSans(fontSize: 10, color: AppColors.brown, fontWeight: FontWeight.w600)),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => _cancelRequest(req),
+                      child: const Icon(Icons.close, color: AppColors.errorRed, size: 20),
+                    ),
+                  ]),
+                )),
+              ]),
+              const SizedBox(height: 16),
+            ],
+
+            if (_linked.isEmpty && _pendingOutgoing.isEmpty)
+              const EmptyState(emoji: '🔗', title: 'No linked accounts',
+                  subtitle: 'Link your other ArtUp accounts above')
+            else if (_linked.isNotEmpty)
+              _card(children: [
+                _cardTitle('Linked (${_linked.length})'),
+                const SizedBox(height: 8),
+                ..._linked.map((p) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(children: [
+                    UserAvatar(url: p.avatarUrl, size: 40),
+                    const SizedBox(width: 12),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text(p.fullName.isNotEmpty ? p.fullName : '@${p.handle}',
+                          style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.dark)),
+                      Text('@${p.handle}',
+                          style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
+                    ])),
+                    GestureDetector(
+                      onTap: () => _remove(p.id),
+                      child: const Icon(Icons.link_off, color: AppColors.errorRed, size: 20),
+                    ),
+                  ]),
+                )),
+              ]),
+          ],
         ]),
       ),
     );
   }
 }
 
+class _PendingRequest {
+  final String notifId;
+  final String recipientId;
+  final String handle;
+  final String avatarUrl;
+  final String fullName;
+  _PendingRequest({
+    required this.notifId, required this.recipientId,
+    required this.handle, required this.avatarUrl, required this.fullName,
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// NOTIFICATIONS PAGE
+// NOTIFICATIONS PREFERENCES PAGE
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _NotificationsPage extends StatefulWidget {
@@ -539,6 +618,20 @@ class _NotificationsPage extends StatefulWidget {
 }
 
 class _NotificationsPageState extends State<_NotificationsPage> {
+  late bool _pushLikes;
+  late bool _pushComments;
+  late bool _pushFollows;
+  late bool _pushMessages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pushLikes    = SettingsService.pushLikes;
+    _pushComments = SettingsService.pushComments;
+    _pushFollows  = SettingsService.pushFollows;
+    _pushMessages = SettingsService.pushMessages;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -553,25 +646,49 @@ class _NotificationsPageState extends State<_NotificationsPage> {
             Text('Choose what activity alerts you receive.',
                 style: GoogleFonts.dmSans(fontSize: 12, color: AppColors.muted)),
             const SizedBox(height: 14),
-            _toggle('❤️  Likes on your posts',
-                'When someone likes your artwork',
-                AppPrefs.pushLikes,
-                (v) => setState(() => AppPrefs.pushLikes = v)),
+            _toggle(
+              '❤️  Likes on your posts',
+              'When someone likes your artwork',
+              _pushLikes,
+                  (v) {
+                setState(() => _pushLikes = v);
+                SettingsService.pushLikes = v;
+                _applyPushSettings();
+              },
+            ),
             _divider(),
-            _toggle('💬  Comments',
-                'When someone comments on your post',
-                AppPrefs.pushComments,
-                (v) => setState(() => AppPrefs.pushComments = v)),
+            _toggle(
+              '💬  Comments',
+              'When someone comments on your post',
+              _pushComments,
+                  (v) {
+                setState(() => _pushComments = v);
+                SettingsService.pushComments = v;
+                _applyPushSettings();
+              },
+            ),
             _divider(),
-            _toggle('👤  New followers',
-                'When someone follows your account',
-                AppPrefs.pushFollows,
-                (v) => setState(() => AppPrefs.pushFollows = v)),
+            _toggle(
+              '👤  New followers',
+              'When someone follows your account',
+              _pushFollows,
+                  (v) {
+                setState(() => _pushFollows = v);
+                SettingsService.pushFollows = v;
+                _applyPushSettings();
+              },
+            ),
             _divider(),
-            _toggle('✉️  Direct messages',
-                'When you receive a new message',
-                AppPrefs.pushMessages,
-                (v) => setState(() => AppPrefs.pushMessages = v)),
+            _toggle(
+              '✉️  Direct messages',
+              'When you receive a new message',
+              _pushMessages,
+                  (v) {
+                setState(() => _pushMessages = v);
+                SettingsService.pushMessages = v;
+                _applyPushSettings();
+              },
+            ),
           ]),
           const SizedBox(height: 16),
           _card(children: [
@@ -585,6 +702,21 @@ class _NotificationsPageState extends State<_NotificationsPage> {
     );
   }
 
+  Future<void> _applyPushSettings() async {
+    final uid = authService.currentUserId;
+    if (uid == null) return;
+    try {
+      await Supabase.instance.client.from('push_preferences').upsert({
+        'user_id':    uid,
+        'likes':      SettingsService.pushLikes,
+        'comments':   SettingsService.pushComments,
+        'follows':    SettingsService.pushFollows,
+        'messages':   SettingsService.pushMessages,
+        'updated_at': DateTime.now().toIso8601String(),
+      }, onConflict: 'user_id');
+    } catch (_) {}
+  }
+
   Widget _toggle(String title, String subtitle, bool value, ValueChanged<bool> onChanged) =>
       Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
@@ -593,192 +725,11 @@ class _NotificationsPageState extends State<_NotificationsPage> {
             Text(title, style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.dark)),
             Text(subtitle, style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
           ])),
-          Switch(value: value, onChanged: onChanged,
-              activeColor: AppColors.peach),
+          Switch(value: value, onChanged: onChanged, activeColor: AppColors.peach),
         ]),
       );
 
   Widget _divider() => const Divider(height: 1, color: AppColors.border);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// DISPLAY SETTINGS PAGE
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _DisplayPage extends StatefulWidget {
-  const _DisplayPage();
-  @override
-  State<_DisplayPage> createState() => _DisplayPageState();
-}
-
-class _DisplayPageState extends State<_DisplayPage> {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.cream,
-      appBar: _appBar(context, 'Display Settings'),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(children: [
-          _card(children: [
-            _cardTitle('Theme'),
-            const SizedBox(height: 12),
-            Row(children: [
-              _themeBtn('☀️  Light', false),
-              const SizedBox(width: 10),
-              _themeBtn('🌙  Dark', true),
-            ]),
-            const SizedBox(height: 6),
-            Text('Dark mode support coming in a future update.',
-                style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
-          ]),
-          const SizedBox(height: 16),
-          _card(children: [
-            _cardTitle('Feed Grid'),
-            const SizedBox(height: 4),
-            Text('Number of columns in the artwork feed.',
-                style: GoogleFonts.dmSans(fontSize: 12, color: AppColors.muted)),
-            const SizedBox(height: 12),
-            Row(children: [
-              _gridBtn('2', Icons.grid_view),
-              const SizedBox(width: 10),
-              _gridBtn('3', Icons.apps),
-            ]),
-          ]),
-          const SizedBox(height: 16),
-          _card(children: [
-            _cardTitle('Post Display'),
-            const SizedBox(height: 4),
-            _switchRow('Show like counts', AppPrefs.showLikeCounts,
-                (v) => setState(() => AppPrefs.showLikeCounts = v)),
-          ]),
-        ]),
-      ),
-    );
-  }
-
-  Widget _themeBtn(String label, bool isDark) {
-    final active = AppPrefs.darkMode == isDark;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => AppPrefs.darkMode = isDark),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            color: active ? AppColors.peachPale : AppColors.cream,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: active ? AppColors.peach : AppColors.border, width: 1.5),
-          ),
-          child: Text(label, textAlign: TextAlign.center,
-              style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w500,
-                  color: active ? AppColors.peach : AppColors.muted)),
-        ),
-      ),
-    );
-  }
-
-  Widget _gridBtn(String cols, IconData icon) {
-    final active = AppPrefs.gridColumns == cols;
-    return Expanded(
-      child: GestureDetector(
-        onTap: () => setState(() => AppPrefs.gridColumns = cols),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            color: active ? AppColors.peachPale : AppColors.cream,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: active ? AppColors.peach : AppColors.border, width: 1.5),
-          ),
-          child: Column(children: [
-            Icon(icon, color: active ? AppColors.peach : AppColors.muted, size: 22),
-            const SizedBox(height: 4),
-            Text('$cols columns', style: GoogleFonts.dmSans(fontSize: 12,
-                color: active ? AppColors.peach : AppColors.muted)),
-          ]),
-        ),
-      ),
-    );
-  }
-
-  Widget _switchRow(String label, bool value, ValueChanged<bool> onChanged) =>
-      Row(children: [
-        Expanded(child: Text(label,
-            style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.dark))),
-        Switch(value: value, onChanged: onChanged, activeColor: AppColors.peach),
-      ]);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LANGUAGE PAGE
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _LanguagePage extends StatefulWidget {
-  const _LanguagePage();
-  @override
-  State<_LanguagePage> createState() => _LanguagePageState();
-}
-
-class _LanguagePageState extends State<_LanguagePage> {
-  final _languages = const [
-    ('English',          'English',          '🇬🇧'),
-    ('Chinese',          '中文（简体）',      '🇨🇳'),
-    ('Chinese (Taiwan)', '中文（繁體）',      '🇹🇼'),
-    ('Malay',            'Bahasa Melayu',     '🇲🇾'),
-    ('Japanese',         '日本語',            '🇯🇵'),
-    ('Korean',           '한국어',            '🇰🇷'),
-    ('French',           'Français',          '🇫🇷'),
-    ('Spanish',          'Español',           '🇪🇸'),
-  ];
-
-  String _selected = AppPrefs.language;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.cream,
-      appBar: _appBar(context, 'Language'),
-      body: ListView.separated(
-        padding: const EdgeInsets.all(16),
-        itemCount: _languages.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 0),
-        itemBuilder: (_, i) {
-          final (key, native, flag) = _languages[i];
-          final active = _selected == key;
-          return GestureDetector(
-            onTap: () {
-              setState(() { _selected = key; AppPrefs.language = key; });
-              Future.delayed(const Duration(milliseconds: 300),
-                  () => Navigator.of(context).pop());
-            },
-            child: Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: active ? AppColors.peachPale : AppColors.cardBg,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                    color: active ? AppColors.peach : AppColors.border, width: 1.5),
-              ),
-              child: Row(children: [
-                Text(flag, style: const TextStyle(fontSize: 22)),
-                const SizedBox(width: 14),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(key, style: GoogleFonts.dmSans(
-                      fontSize: 14, fontWeight: FontWeight.w600,
-                      color: active ? AppColors.peach : AppColors.dark)),
-                  if (native != key)
-                    Text(native, style: GoogleFonts.dmSans(fontSize: 12, color: AppColors.muted)),
-                ])),
-                if (active) const Icon(Icons.check_circle, color: AppColors.peach, size: 20),
-              ]),
-            ),
-          );
-        },
-      ),
-    );
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -790,44 +741,45 @@ class _HelpPage extends StatelessWidget {
 
   static const _faqs = [
     (
-      'How do I post artwork?',
-      'Tap the + button in the bottom navigation bar. You can upload up to 5 images per post. '
-      'Add a title, description, tags, and choose your visibility before posting.'
+    'How do I post artwork?',
+    'Tap the + button in the bottom navigation bar. You can upload up to 5 images per post. '
+        'Add a title, description, tags, and choose your visibility before posting.'
     ),
     (
-      'What content is allowed?',
-      'ArtUp welcomes all original art: 2D, 3D, photography, sketches, and more. '
-      'Content must be your own original work or work you have rights to share. '
-      'Mature content must be tagged with the appropriate age rating.'
+    'What content is allowed?',
+    'ArtUp welcomes all original art: 2D, 3D, photography, sketches, and more. '
+        'Content must be your own original work or work you have rights to share. '
+        'Mature/18+ content must be tagged with the appropriate age rating.'
     ),
     (
-      'How does the age rating filter work?',
-      'Go to Settings → Security → Content Age Rating. Set your preferred rating and '
-      'ArtUp will hide posts rated above your threshold from your feed and search results.'
+    'How does the age rating filter work?',
+    'Go to Settings → Security → Content Age Rating. Choose "All Ages" to see only '
+        'safe content, or "18+" to see everything including explicit content.'
     ),
     (
-      'How do I link accounts?',
-      'Go to Settings → Linked Accounts. Search for another ArtUp handle and tap the + button. '
-      'Linked accounts appear publicly on your profile so followers can find your other work.'
+    'How do I link accounts?',
+    'Go to Settings → Linked Accounts. Search for another ArtUp handle and tap the + button '
+        'to send a link request. The other account will receive a notification and must accept '
+        'before the link appears publicly on your profile.'
     ),
     (
-      'Can I delete my posts?',
-      'Yes. Open the post, tap the trash icon in the top-right corner, and confirm the deletion. '
-      'This action is permanent and cannot be undone.'
+    'Can I delete my posts?',
+    'Yes. Open the post, tap the trash icon in the top-right corner, and confirm the deletion. '
+        'This action is permanent and cannot be undone.'
     ),
     (
-      'How do I report inappropriate content?',
-      'Long-press on any post and select "Report". Our moderation team will review the content within 48 hours. '
-      'For urgent issues, contact us at support@artup.app.'
+    'How do I report inappropriate content?',
+    'Long-press on any post and select "Report". Our moderation team will review the content within 48 hours. '
+        'For urgent issues, contact us at support@artup.app.'
     ),
     (
-      'How do I change my profile picture?',
-      'Go to your Profile tab. Tap the camera icon on your avatar, or tap the avatar itself to open the image picker.'
+    'How do I change my profile picture?',
+    'Go to your Profile tab. Tap the camera icon on your avatar, or tap the avatar itself to open the image picker.'
     ),
     (
-      'I forgot my password. What do I do?',
-      'On the login screen, tap "Forgot password?" and enter your email. '
-      'You will receive a reset link from Supabase Auth.'
+    'I forgot my password. What do I do?',
+    'On the login screen, tap "Forgot password?" and enter your email. '
+        'You will receive a reset link from Supabase Auth.'
     ),
   ];
 
@@ -839,7 +791,6 @@ class _HelpPage extends StatelessWidget {
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          // Contact banner
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -860,24 +811,21 @@ class _HelpPage extends StatelessWidget {
             ]),
           ),
           const SizedBox(height: 24),
-
           Text('Frequently Asked Questions', style: GoogleFonts.dmSans(
               fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.dark)),
           const SizedBox(height: 12),
-
           ..._faqs.map((faq) => _FaqTile(question: faq.$1, answer: faq.$2)),
-
           const SizedBox(height: 20),
           _card(children: [
             _cardTitle('App Information'),
             const SizedBox(height: 8),
-            _infoRow('Version',   '1.0.0'),
+            _infoRow('Version',  '1.0.0'),
             _divider(),
-            _infoRow('Platform',  'Android (Flutter)'),
+            _infoRow('Platform', 'Android (Flutter)'),
             _divider(),
-            _infoRow('Backend',   'Supabase'),
+            _infoRow('Backend',  'Supabase'),
             _divider(),
-            _infoRow('Support',   'support@artup.app'),
+            _infoRow('Support',  'support@artup.app'),
           ]),
         ]),
       ),
@@ -892,7 +840,6 @@ class _HelpPage extends StatelessWidget {
       Text(v, style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.dark)),
     ]),
   );
-
   Widget _divider() => const Divider(height: 1, color: AppColors.border);
 }
 
@@ -900,14 +847,12 @@ class _FaqTile extends StatefulWidget {
   final String question;
   final String answer;
   const _FaqTile({required this.question, required this.answer});
-
   @override
   State<_FaqTile> createState() => _FaqTileState();
 }
 
 class _FaqTileState extends State<_FaqTile> {
   bool _expanded = false;
-
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -921,8 +866,7 @@ class _FaqTileState extends State<_FaqTile> {
         child: ExpansionTile(
           title: Text(widget.question,
               style: GoogleFonts.dmSans(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.dark)),
-          trailing: Icon(_expanded ? Icons.remove : Icons.add,
-              color: AppColors.peach, size: 18),
+          trailing: Icon(_expanded ? Icons.remove : Icons.add, color: AppColors.peach, size: 18),
           onExpansionChanged: (v) => setState(() => _expanded = v),
           children: [
             Padding(
@@ -953,7 +897,6 @@ class _CreditsPage extends StatelessWidget {
         padding: const EdgeInsets.all(24),
         child: Column(children: [
           const SizedBox(height: 16),
-          // App logo
           Container(
             width: 80, height: 80,
             decoration: BoxDecoration(
@@ -975,32 +918,23 @@ class _CreditsPage extends StatelessWidget {
               fontStyle: FontStyle.italic, color: AppColors.peach)),
           Text('Version 1.0.0', style: GoogleFonts.dmSans(fontSize: 13, color: AppColors.muted)),
           const SizedBox(height: 32),
-
-          // Made by
           _card(children: [
             _cardTitle('Made by'),
             const SizedBox(height: 14),
-            _creditPerson('👨‍💻', 'Khoo Yan Jun',    'Lead Developer & Designer'),
+            _creditPerson('👨‍💻', 'Khoo Yan Jun',   'Lead Developer & Designer'),
             const Divider(height: 24, color: AppColors.border),
-            _creditPerson('👨‍💻', 'Chow Kai Feng',  'Developer & Co-Designer'),
+            _creditPerson('👨‍💻', 'Chow Kai Feng', 'Developer & Co-Designer'),
           ]),
           const SizedBox(height: 16),
-
-          // Special thanks
           _card(children: [
             _cardTitle('Special Thanks'),
             const SizedBox(height: 14),
-            _thankItem('⚡', 'Supabase',
-                'Backend, database, authentication & storage'),
+            _thankItem('⚡', 'Supabase',        'Backend, database, authentication & storage'),
             const Divider(height: 20, color: AppColors.border),
-            _thankItem('🐦', 'Flutter & Dart',
-                'Cross-platform UI framework by Google'),
+            _thankItem('🐦', 'Flutter & Dart',  'Cross-platform UI framework by Google'),
             const Divider(height: 20, color: AppColors.border),
-            _thankItem('🤖', 'Android Studio',
-                'Development environment & device testing'),
+            _thankItem('🤖', 'Android Studio',  'Development environment & device testing'),
           ]),
-          const SizedBox(height: 16),
-
           const SizedBox(height: 32),
           Text('© 2025 ArtUp. All rights reserved.',
               style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted),
@@ -1025,25 +959,16 @@ class _CreditsPage extends StatelessWidget {
     ]),
   ]);
 
-  Widget _thankItem(String emoji, String name, String desc) => Row(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-    Text(emoji, style: const TextStyle(fontSize: 26)),
-    const SizedBox(width: 12),
-    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(name, style: GoogleFonts.dmSans(
-          fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.dark)),
-      Text(desc, style: GoogleFonts.dmSans(fontSize: 12, color: AppColors.muted, height: 1.4)),
-    ])),
-  ]);
-
-  Widget _libRow(String name) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 5),
-    child: Row(children: [
-      const Icon(Icons.code, size: 14, color: AppColors.muted),
-      const SizedBox(width: 8),
-      Text(name, style: GoogleFonts.dmSans(fontSize: 13, color: AppColors.dark)),
-    ]),
-  );
+  Widget _thankItem(String emoji, String name, String desc) =>
+      Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(emoji, style: const TextStyle(fontSize: 26)),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(name, style: GoogleFonts.dmSans(
+              fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.dark)),
+          Text(desc, style: GoogleFonts.dmSans(fontSize: 12, color: AppColors.muted, height: 1.4)),
+        ])),
+      ]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1080,7 +1005,7 @@ Widget _cardTitle(String t) => Text(t,
 Widget _errorBox(String msg) => Container(
   padding: const EdgeInsets.all(12),
   decoration: BoxDecoration(
-    color: AppColors.errorRed.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
+      color: AppColors.errorRed.withOpacity(0.1), borderRadius: BorderRadius.circular(10)),
   child: Row(children: [
     const Icon(Icons.error_outline, color: AppColors.errorRed, size: 16),
     const SizedBox(width: 8),
@@ -1092,11 +1017,11 @@ Widget _errorBox(String msg) => Container(
 Widget _successBox(String msg) => Container(
   padding: const EdgeInsets.all(12),
   decoration: BoxDecoration(
-    color: const Color(0xFFDFF0E4), borderRadius: BorderRadius.circular(10)),
+      color: const Color(0xFFDFF0E4), borderRadius: BorderRadius.circular(10)),
   child: Row(children: [
     const Icon(Icons.check_circle_outline, color: Color(0xFF2E7D52), size: 16),
     const SizedBox(width: 8),
     Expanded(child: Text(msg,
-        style: GoogleFonts.dmSans(fontSize: 12, color: Color(0xFF2E7D52)))),
+        style: GoogleFonts.dmSans(fontSize: 12, color: const Color(0xFF2E7D52)))),
   ]),
 );

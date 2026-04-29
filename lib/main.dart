@@ -8,6 +8,7 @@ import 'screens/home_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/upload_screen.dart';
 import 'screens/dm_screen.dart';
+import '../services/settings_service.dart';
 import 'screens/settings_screen.dart';
 import 'screens/notifications_screen.dart';
 import 'services/supabase_service.dart';
@@ -19,6 +20,7 @@ const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhY
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SettingsService.init();
 
   await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
   FlutterError.onError = (details) {
@@ -150,7 +152,6 @@ class _MainShellState extends State<MainShell> {
     final titles   = ['ArtUp', 'Discover', '', 'Messages', 'Settings'];
     final isLogo   = [true, false, false, true, true];
     final isHome   = _currentIndex == 0;
-    final isMsg    = _currentIndex == 3;
 
     return AppBar(
       backgroundColor: AppColors.warmWhite,
@@ -158,12 +159,12 @@ class _MainShellState extends State<MainShell> {
       centerTitle: true,
       title: isLogo[_currentIndex]
           ? Text('ArtUp',
-              style: GoogleFonts.playfairDisplay(
-                  fontSize: 22, fontWeight: FontWeight.w700,
-                  fontStyle: FontStyle.italic, color: AppColors.peach))
+          style: GoogleFonts.playfairDisplay(
+              fontSize: 22, fontWeight: FontWeight.w700,
+              fontStyle: FontStyle.italic, color: AppColors.peach))
           : Text(titles[_currentIndex],
-              style: GoogleFonts.dmSans(
-                  fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.dark)),
+          style: GoogleFonts.dmSans(
+              fontSize: 16, fontWeight: FontWeight.w600, color: AppColors.dark)),
       actions: [
         if (isHome) ...[
           // Notification bell with badge
@@ -193,11 +194,6 @@ class _MainShellState extends State<MainShell> {
             ],
           ),
         ],
-        if (isMsg)
-          IconButton(
-            icon: const Icon(Icons.edit_outlined, color: AppColors.peach),
-            onPressed: () {}, // future: new conversation
-          ),
       ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),

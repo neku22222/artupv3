@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import '../models.dart';
 import '../services/supabase_service.dart';
@@ -7,12 +8,6 @@ import '../widgets/common_widgets.dart';
 import '../theme/app_theme.dart';
 import 'post_detail_screen.dart';
 import 'profile_screen.dart';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Notifications screen
-// Reads from the 'notifications' table (requires SQL migration below).
-// Falls back gracefully if the table doesn't exist yet.
-// ─────────────────────────────────────────────────────────────────────────────
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -35,8 +30,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     setState(() => _loading = true);
     final notifs = await notificationService.getNotifications();
     if (mounted) setState(() { _notifs = notifs; _loading = false; });
-    // Mark all read
     await notificationService.markAllRead();
+  }
+
+  /// Called after the user accepts/declines a link request so the tile refreshes
+  void _onLinkRequestActioned(String notifId) {
+    setState(() => _notifs.removeWhere((n) => n.id == notifId));
   }
 
   @override
@@ -59,24 +58,42 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
-          : _notifs.isEmpty
-              ? const EmptyState(
-                  emoji: '🔔',
-                  title: 'No notifications yet',
-                  subtitle: 'When people like, follow or comment you\'ll see it here')
-              : RefreshIndicator(
-                  color: AppColors.peach,
-                  onRefresh: _load,
-                  child: ListView.separated(
-                    itemCount: _notifs.length,
-                    separatorBuilder: (_, __) =>
-                        const Divider(height: 1, color: AppColors.border, indent: 72),
-                    itemBuilder: (_, i) => _NotifTile(notif: _notifs[i]),
-                  ),
-                ),
+          : RefreshIndicator(
+        color: AppColors.peach,
+        onRefresh: _load,
+        child: _notifs.isEmpty
+            ? ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: const [
+            SizedBox(height: 100),
+            EmptyState(
+                emoji: '🔔',
+                title: 'No notifications yet',
+                subtitle: 'When people like, follow or comment you\'ll see it here'),
+          ],
+        )
+            : ListView.separated(
+          physics: const AlwaysScrollableScrollPhysics(),
+          itemCount: _notifs.length,
+          separatorBuilder: (_, __) =>
+          const Divider(height: 1, color: AppColors.border, indent: 72),
+          itemBuilder: (_, i) {
+            final notif = _notifs[i];
+            if (notif.type == 'link_request') {
+              return _LinkRequestTile(
+                notif: notif,
+                onActioned: () => _onLinkRequestActioned(notif.id),
+              );
+            }
+            return _NotifTile(notif: notif);
+          },
+        ),
+      ),
     );
   }
 }
+
+// ── Standard notification tile ────────────────────────────────────────────────
 
 class _NotifTile extends StatelessWidget {
   final NotificationModel notif;
@@ -133,7 +150,6 @@ class _NotifTile extends StatelessWidget {
         color: notif.isRead ? Colors.transparent : AppColors.peachPale.withOpacity(0.4),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(children: [
-          // Actor avatar
           Stack(
             clipBehavior: Clip.none,
             children: [
@@ -167,7 +183,6 @@ class _NotifTile extends StatelessWidget {
                   style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
             ]),
           ),
-          // Post thumbnail if applicable
           if (notif.postImageUrl != null && notif.postImageUrl!.isNotEmpty)
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
@@ -180,107 +195,189 @@ class _NotifTile extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SQL MIGRATION (run in Supabase SQL Editor):
-// ─────────────────────────────────────────────────────────────────────────────
-/*
-CREATE TABLE IF NOT EXISTS public.notifications (
-  id             uuid DEFAULT uuid_generate_v4() PRIMARY KEY,
-  recipient_id   uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
-  actor_id       uuid REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
-  actor_handle   text,
-  actor_avatar   text,
-  type           text NOT NULL CHECK (type IN ('like', 'comment', 'follow')),
-  post_id        uuid REFERENCES public.posts(id) ON DELETE CASCADE,
-  post_image_url text,
-  comment_body   text,
-  is_read        boolean NOT NULL DEFAULT false,
-  created_at     timestamptz DEFAULT now()
-);
+// ── Link-request tile with Accept / Decline buttons ───────────────────────────
 
-ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+class _LinkRequestTile extends StatefulWidget {
+  final NotificationModel notif;
+  final VoidCallback onActioned;
 
-CREATE POLICY "Users can view own notifications"
-  ON public.notifications FOR SELECT USING (auth.uid() = recipient_id);
+  const _LinkRequestTile({required this.notif, required this.onActioned});
 
-CREATE POLICY "Authenticated users can insert notifications"
-  ON public.notifications FOR INSERT WITH CHECK (auth.uid() = actor_id);
+  @override
+  State<_LinkRequestTile> createState() => _LinkRequestTileState();
+}
 
-CREATE POLICY "Users can mark own notifications read"
-  ON public.notifications FOR UPDATE USING (auth.uid() = recipient_id);
+class _LinkRequestTileState extends State<_LinkRequestTile> {
+  bool _loading = false;
 
--- Trigger: create like notification
-CREATE OR REPLACE FUNCTION public.handle_like_notification()
-RETURNS trigger AS $$
-DECLARE
-  v_post_author uuid;
-  v_post_image  text;
-  v_handle      text;
-  v_avatar      text;
-BEGIN
-  SELECT author_id, image_url INTO v_post_author, v_post_image
-    FROM public.posts WHERE id = NEW.post_id;
-  SELECT handle, avatar_url INTO v_handle, v_avatar
-    FROM public.profiles WHERE id = NEW.user_id;
-  IF v_post_author IS DISTINCT FROM NEW.user_id THEN
-    INSERT INTO public.notifications
-      (recipient_id, actor_id, actor_handle, actor_avatar, type, post_id, post_image_url)
-    VALUES
-      (v_post_author, NEW.user_id, v_handle, v_avatar, 'like', NEW.post_id, v_post_image);
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+  Future<void> _accept() async {
+    setState(() => _loading = true);
+    try {
+      final myId     = authService.currentUserId!;
+      final actorId  = widget.notif.actorId;
 
-CREATE TRIGGER on_like_notification
-  AFTER INSERT ON public.likes
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_like_notification();
+      // Create a bidirectional link: actor → me AND me → actor
+      final client = Supabase.instance.client;
 
--- Trigger: create follow notification
-CREATE OR REPLACE FUNCTION public.handle_follow_notification()
-RETURNS trigger AS $$
-DECLARE
-  v_handle text;
-  v_avatar text;
-BEGIN
-  SELECT handle, avatar_url INTO v_handle, v_avatar
-    FROM public.profiles WHERE id = NEW.follower_id;
-  INSERT INTO public.notifications
-    (recipient_id, actor_id, actor_handle, actor_avatar, type)
-  VALUES
-    (NEW.following_id, NEW.follower_id, v_handle, v_avatar, 'follow');
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+      // Upsert both directions so duplicate inserts don't throw
+      await client.from('linked_accounts').upsert(
+        {'owner_id': actorId, 'linked_id': myId},
+        onConflict: 'owner_id,linked_id',
+      );
+      await client.from('linked_accounts').upsert(
+        {'owner_id': myId, 'linked_id': actorId},
+        onConflict: 'owner_id,linked_id',
+      );
 
-CREATE TRIGGER on_follow_notification
-  AFTER INSERT ON public.follows
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_follow_notification();
+      // Delete the pending notification
+      await client.from('notifications').delete().eq('id', widget.notif.id);
 
--- Trigger: create comment notification
-CREATE OR REPLACE FUNCTION public.handle_comment_notification()
-RETURNS trigger AS $$
-DECLARE
-  v_post_author uuid;
-  v_post_image  text;
-  v_handle      text;
-  v_avatar      text;
-BEGIN
-  SELECT author_id, image_url INTO v_post_author, v_post_image
-    FROM public.posts WHERE id = NEW.post_id;
-  SELECT handle, avatar_url INTO v_handle, v_avatar
-    FROM public.profiles WHERE id = NEW.author_id;
-  IF v_post_author IS DISTINCT FROM NEW.author_id THEN
-    INSERT INTO public.notifications
-      (recipient_id, actor_id, actor_handle, actor_avatar, type, post_id, post_image_url, comment_body)
-    VALUES
-      (v_post_author, NEW.author_id, v_handle, v_avatar, 'comment', NEW.post_id, v_post_image, NEW.body);
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+      // Send an accepted notification back to the requester
+      await client.from('notifications').insert({
+        'recipient_id': actorId,
+        'actor_id':     myId,
+        'type':         'link_accepted',
+        'is_read':      false,
+      });
 
-CREATE TRIGGER on_comment_notification
-  AFTER INSERT ON public.comments
-  FOR EACH ROW EXECUTE PROCEDURE public.handle_comment_notification();
-*/
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Linked with @${widget.notif.actorHandle ?? 'user'} ✅'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ));
+        widget.onActioned();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed to accept: ${e.toString()}'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ));
+      }
+    }
+  }
+
+  Future<void> _decline() async {
+    setState(() => _loading = true);
+    try {
+      await Supabase.instance.client
+          .from('notifications')
+          .delete()
+          .eq('id', widget.notif.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Request from @${widget.notif.actorHandle ?? 'user'} declined'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ));
+        widget.onActioned();
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final handle = widget.notif.actorHandle != null
+        ? '@${widget.notif.actorHandle}'
+        : 'Someone';
+
+    return Container(
+      color: AppColors.peachPale.withOpacity(0.4),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Avatar with chain-link badge
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            GestureDetector(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => ProfileScreen(userId: widget.notif.actorId))),
+              child: UserAvatar(url: widget.notif.actorAvatar ?? '', size: 44),
+            ),
+            Positioned(
+              bottom: -2, right: -2,
+              child: Container(
+                width: 18, height: 18,
+                decoration: BoxDecoration(
+                    color: AppColors.peach, shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.cream, width: 1.5)),
+                child: const Icon(Icons.link, color: Colors.white, size: 10),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(
+              '$handle wants to link their account to yours',
+              style: GoogleFonts.dmSans(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.dark),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'This will appear publicly on both profiles.',
+              style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted),
+            ),
+            const SizedBox(height: 2),
+            Text(timeago.format(widget.notif.createdAt),
+                style: GoogleFonts.dmSans(fontSize: 11, color: AppColors.muted)),
+            const SizedBox(height: 10),
+            if (_loading)
+              const SizedBox(
+                height: 24,
+                child: Center(child: CircularProgressIndicator(
+                    color: AppColors.peach, strokeWidth: 2)),
+              )
+            else
+              Row(children: [
+                // Accept button
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _accept,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.peach,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text('Accept',
+                          style: GoogleFonts.dmSans(
+                              fontSize: 12, fontWeight: FontWeight.w700,
+                              color: Colors.white)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Decline button
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _decline,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardBg,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.border, width: 1.5),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text('Decline',
+                          style: GoogleFonts.dmSans(
+                              fontSize: 12, fontWeight: FontWeight.w700,
+                              color: AppColors.muted)),
+                    ),
+                  ),
+                ),
+              ]),
+          ]),
+        ),
+      ]),
+    );
+  }
+}

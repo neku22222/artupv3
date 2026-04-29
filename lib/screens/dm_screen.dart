@@ -38,18 +38,23 @@ class _DMScreenState extends State<DMScreen> {
   Widget build(BuildContext context) {
     if (_loading) return const Center(child: CircularProgressIndicator(color: AppColors.peach));
 
-    if (_convos.isEmpty) {
-      return const EmptyState(
-        emoji: '💬',
-        title: 'No messages yet',
-        subtitle: 'Visit an artist\'s profile and tap the message button to start a conversation',
-      );
-    }
-
     return RefreshIndicator(
       color: AppColors.peach,
       onRefresh: () async { setState(() => _loading = true); await _load(); },
-      child: ListView.separated(
+      child: _convos.isEmpty
+          ? ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: const [
+          SizedBox(height: 100),
+          EmptyState(
+            emoji: '💬',
+            title: 'No messages yet',
+            subtitle: 'Visit an artist\'s profile and tap the message button to start a conversation',
+          ),
+        ],
+      )
+          : ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
         itemCount: _convos.length,
         separatorBuilder: (_, __) => const Divider(height: 1, indent: 76, color: AppColors.border),
         itemBuilder: (_, i) {
@@ -186,17 +191,17 @@ class _ChatScreenState extends State<ChatScreen> {
           child: _loading
               ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
               : _messages.isEmpty
-                  ? const EmptyState(emoji: '👋', title: 'Say hello!', subtitle: 'Start the conversation')
-                  : ListView.builder(
-                      controller: _scrollCtrl,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      itemCount: _messages.length,
-                      itemBuilder: (_, i) {
-                        final msg  = _messages[i];
-                        final isMine = msg.senderId == me;
-                        return _MessageBubble(message: msg, isMine: isMine);
-                      },
-                    ),
+              ? const EmptyState(emoji: '👋', title: 'Say hello!', subtitle: 'Start the conversation')
+              : ListView.builder(
+            controller: _scrollCtrl,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            itemCount: _messages.length,
+            itemBuilder: (_, i) {
+              final msg  = _messages[i];
+              final isMine = msg.senderId == me;
+              return _MessageBubble(message: msg, isMine: isMine);
+            },
+          ),
         ),
         _buildInput(),
       ]),
@@ -241,7 +246,7 @@ class _ChatScreenState extends State<ChatScreen> {
             decoration: const BoxDecoration(color: AppColors.peach, shape: BoxShape.circle),
             child: _sending
                 ? const Padding(padding: EdgeInsets.all(10),
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
           ),
         ),

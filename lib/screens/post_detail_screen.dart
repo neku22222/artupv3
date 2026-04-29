@@ -92,9 +92,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     if (mounted) setState(() => _sizesResolved = true);
   }
 
-  // Returns the height the viewer frame should use:
-  // = height of the tallest image when rendered at screen width,
-  //   capped at 80% of screen height
+  // Returns the height the viewer frame should use
   double _resolvedViewerHeight(List<String> urls) {
     if (_imageSizes.isEmpty) return 300;
     final screenW  = MediaQuery.of(context).size.width;
@@ -148,7 +146,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
   bool get _isOwn =>
       _post != null && _post!.authorId == authService.currentUserId;
 
-  // ── Edit post ────────────────────────────────────────────────────────────
   Future<void> _editPost() async {
     if (_post == null) return;
     final updated = await Navigator.of(context).push<PostModel>(
@@ -194,27 +191,26 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       body: _loading
           ? const Center(child: CircularProgressIndicator(color: AppColors.peach))
           : _post == null
-              ? const EmptyState(
-                  emoji: '😕', title: 'Post not found',
-                  subtitle: 'It may have been deleted')
-              : Column(children: [
-                  Expanded(child: _buildBody()),
-                  _buildCommentInput(),
-                ]),
+          ? const EmptyState(
+          emoji: '😕', title: 'Post not found',
+          subtitle: 'It may have been deleted')
+          : Column(children: [
+        Expanded(child: _buildBody()),
+        _buildCommentInput(),
+      ]),
     );
   }
 
   Widget _buildBody() {
     final post = _post!;
     return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // ── Image viewer ────────────────────────────────────────────────
         _buildImageViewer(post.imageUrls),
 
         Padding(
           padding: const EdgeInsets.all(16),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Author row
             GestureDetector(
               onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => ProfileScreen(userId: post.authorId))),
@@ -255,13 +251,12 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               const SizedBox(width: 6),
               _AgeRatingBadge(rating: post.ageRating),
             ]),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
 
+            // ── Expandable Description Section ──────────────────────────────
             if (post.description.isNotEmpty) ...[
-              Text(post.description,
-                  style: GoogleFonts.dmSans(
-                      fontSize: 14, color: AppColors.muted, height: 1.6)),
-              const SizedBox(height: 10),
+              _ExpandableDescription(description: post.description),
+              const SizedBox(height: 14),
             ],
 
             if (post.tags.isNotEmpty)
@@ -277,7 +272,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                   )).toList()),
             const SizedBox(height: 16),
 
-            // Like / comment row
             Row(children: [
               GestureDetector(
                 onTap: _toggleLike,
@@ -336,17 +330,17 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               )
             else
               ..._comments.map((c) => _CommentTile(
-                    comment: c,
-                    isOwn: c.authorId == authService.currentUserId,
-                    onEdit: (newBody) {
-                      setState(() => c.body = newBody);
-                      commentService.editComment(c.id, newBody);
-                    },
-                    onDelete: () {
-                      setState(() => _comments.remove(c));
-                      commentService.deleteComment(c.id);
-                    },
-                  )),
+                comment: c,
+                isOwn: c.authorId == authService.currentUserId,
+                onEdit: (newBody) {
+                  setState(() => c.body = newBody);
+                  commentService.editComment(c.id, newBody);
+                },
+                onDelete: () {
+                  setState(() => _comments.remove(c));
+                  commentService.deleteComment(c.id);
+                },
+              )),
 
             const SizedBox(height: 80),
           ]),
@@ -355,7 +349,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
     );
   }
 
-  // ── Dynamic height image viewer with swipe + counter badge ──────────────
   Widget _buildImageViewer(List<String> urls) {
     final isMulti = urls.length > 1;
 
@@ -376,31 +369,30 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
           width: double.infinity,
           child: isMulti
               ? PageView.builder(
-                  controller: _pageCtrl,
-                  itemCount: urls.length,
-                  onPageChanged: (i) => setState(() => _currentImageIndex = i),
-                  itemBuilder: (_, i) => CachedNetworkImage(
-                    imageUrl: urls[i],
-                    fit: BoxFit.contain,
-                    width: double.infinity,
-                    placeholder: (_, __) => Container(color: AppColors.border),
-                    errorWidget: (_, __, ___) => Container(
-                        color: AppColors.border,
-                        child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
-                  ),
-                )
+            controller: _pageCtrl,
+            itemCount: urls.length,
+            onPageChanged: (i) => setState(() => _currentImageIndex = i),
+            itemBuilder: (_, i) => CachedNetworkImage(
+              imageUrl: urls[i],
+              fit: BoxFit.contain,
+              width: double.infinity,
+              placeholder: (_, __) => Container(color: AppColors.border),
+              errorWidget: (_, __, ___) => Container(
+                  color: AppColors.border,
+                  child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
+            ),
+          )
               : CachedNetworkImage(
-                  imageUrl: urls.first,
-                  fit: BoxFit.contain,
-                  width: double.infinity,
-                  placeholder: (_, __) => Container(height: 300, color: AppColors.border),
-                  errorWidget: (_, __, ___) => Container(
-                      height: 300, color: AppColors.border,
-                      child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
-                ),
+            imageUrl: urls.first,
+            fit: BoxFit.contain,
+            width: double.infinity,
+            placeholder: (_, __) => Container(height: 300, color: AppColors.border),
+            errorWidget: (_, __, ___) => Container(
+                height: 300, color: AppColors.border,
+                child: const Icon(Icons.broken_image_outlined, color: AppColors.muted)),
+          ),
         ),
 
-        // Counter badge — only for multi-image: "1 / 5"
         if (isMulti)
           Positioned(
             top: 12, right: 12,
@@ -418,7 +410,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             ),
           ),
 
-        // Dot indicator row — beneath the counter, above bottom edge
         if (isMulti)
           Positioned(
             bottom: 10,
@@ -440,7 +431,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             ),
           ),
 
-        // Left chevron
         if (isMulti && _currentImageIndex > 0)
           Positioned(
             left: 8, top: 0, bottom: 0,
@@ -461,7 +451,6 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
             ),
           ),
 
-        // Right chevron
         if (isMulti && _currentImageIndex < urls.length - 1)
           Positioned(
             right: 8, top: 0, bottom: 0,
@@ -517,7 +506,7 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
                 color: AppColors.peach, shape: BoxShape.circle),
             child: _sendingComment
                 ? const Padding(padding: EdgeInsets.all(8),
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                 : const Icon(Icons.send_rounded, color: Colors.white, size: 18),
           ),
         ),
@@ -542,6 +531,63 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
       await postService.deletePost(widget.postId);
       if (mounted) Navigator.of(context).pop();
     }
+  }
+}
+
+// ── NEW: Internal Helper Widget for Expandable Text ───────────────────────────
+
+class _ExpandableDescription extends StatefulWidget {
+  final String description;
+  const _ExpandableDescription({required this.description});
+
+  @override
+  State<_ExpandableDescription> createState() => _ExpandableDescriptionState();
+}
+
+class _ExpandableDescriptionState extends State<_ExpandableDescription> {
+  bool _isExpanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // Threshold to decide if we need a "View full" button
+    const int threshold = 100;
+
+    if (widget.description.length <= threshold) {
+      return Text(
+        widget.description,
+        style: GoogleFonts.dmSans(fontSize: 14, color: AppColors.muted, height: 1.6),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeInOut,
+          child: Text(
+            widget.description,
+            maxLines: _isExpanded ? null : 3,
+            overflow: _isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
+            style: GoogleFonts.dmSans(fontSize: 14, color: AppColors.muted, height: 1.6),
+          ),
+        ),
+        GestureDetector(
+          onTap: () => setState(() => _isExpanded = !_isExpanded),
+          child: Padding(
+            padding: const EdgeInsets.only(top: 4.0),
+            child: Text(
+              _isExpanded ? 'Show less' : 'View full description',
+              style: GoogleFonts.dmSans(
+                fontSize: 13,
+                color: AppColors.peach,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -594,7 +640,7 @@ class _CommentTile extends StatefulWidget {
 class _CommentTileState extends State<_CommentTile> {
   bool _editing = false;
   late final TextEditingController _editCtrl =
-      TextEditingController(text: widget.comment.body);
+  TextEditingController(text: widget.comment.body);
 
   @override
   void dispose() { _editCtrl.dispose(); super.dispose(); }
@@ -644,7 +690,7 @@ class _CommentTileState extends State<_CommentTile> {
                   decoration: InputDecoration(
                     isDense: true,
                     contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                     border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                       borderSide: const BorderSide(color: AppColors.peach),
