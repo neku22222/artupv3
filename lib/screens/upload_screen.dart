@@ -145,6 +145,9 @@ class _UploadScreenState extends State<UploadScreen> {
           Navigator.of(context).pop(p);
         }
       } else {
+        print('DEBUG ageRating: "$_ageRating"');
+        print('DEBUG visibility: "${['public', 'followers', 'private'][_visibility]}"');
+        print('DEBUG category: "$_category"');
         await postService.createPost(PostModel(
           id:          '',
           authorId:    uid,

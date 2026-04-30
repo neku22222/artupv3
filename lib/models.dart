@@ -145,9 +145,9 @@ class PostModel {
   /// Map app-facing rating → DB check constraint values
   static String _mapAgeRatingToDb(String rating) {
     switch (rating) {
-      case 'NSFW': return '17+';
+      case 'NSFW': return 'NSFW';
       case '18+':  return '18+';
-      default:     return 'All Ages'; // SFW
+      default:     return 'SFW'; // SFW stays SFW
     }
   }
 }
